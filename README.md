@@ -1,23 +1,117 @@
-# IRA — Intelligent Responsive Assistant
+# IRA - Intelligent Responsive Assistant
 
-IRA is a next-generation autonomous AI assistant inspired by futuristic systems like J.A.R.V.I.S, FRIDAY, and Samantha. Designed as an intelligent desktop companion, IRA combines conversational AI, automation, computer vision, memory systems, and real-time interaction to create a powerful AI operating environment.
+IRA is a personal AI assistant inspired by futuristic systems like J.A.R.V.I.S, FRIDAY, and Samantha. The goal is to build an intelligent desktop companion that can talk with the user, control computer actions, automate workflows, understand screen context, remember preferences, and eventually connect with mobile devices.
 
-The goal of IRA is to build an assistant capable of understanding natural language, controlling computer systems, automating workflows, interacting with applications, managing browser activities, and assisting users continuously through both voice and text communication.
+This project is starting with a small working foundation: a Python backend that can receive natural language commands and safely perform basic computer actions.
 
-## Core Features
+## Current Prototype
 
-* Natural language conversation
-* Voice and text interaction
-* Autonomous task execution
-* Desktop and browser automation
-* Intelligent workflow management
-* Application control
-* Screen understanding using computer vision
-* Persistent memory system
-* Email and productivity assistance
-* AI-powered reasoning and planning
-* Real-time contextual awareness
-* Modular and scalable architecture
+The first version of IRA can:
+
+* Respond to simple chat commands
+* Open apps like Notepad, Calculator, Chrome, Edge, and Spotify
+* Open files and folders by path
+* Open websites
+* Search YouTube for music or videos
+* Run from a command-line interface
+
+## Run IRA
+
+### Backend CLI
+
+From the project root:
+
+```powershell
+cd backend
+python -m ira.cli
+```
+
+Try commands like:
+
+```text
+hello
+help
+open notepad
+open calculator
+open website youtube.com
+open folder C:\Users\hp\Downloads
+play relaxing music
+exit
+```
+
+### Backend Server
+
+Run this when you want the frontend to execute real IRA commands:
+
+```powershell
+cd backend
+python -m ira.server
+```
+
+The server listens on:
+
+```text
+http://127.0.0.1:8765
+```
+
+### Frontend Desktop App
+
+From the project root:
+
+```powershell
+cd frontend
+npm install
+npm run desktop
+```
+
+For browser-only development:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Then open the local URL Vite prints in the terminal.
+
+For the frontend command box and quick action buttons to control the computer, keep the backend server running in another terminal.
+
+## Planned Features
+
+### Desktop Control
+
+* Open apps, files, folders, and websites
+* Control keyboard and mouse with permission
+* Automate browser tasks
+* Play music through Spotify or YouTube
+* Manage local workflows and productivity tasks
+
+### Voice Interaction
+
+* Speech-to-text
+* Text-to-speech
+* Wake/listen mode
+* Real-time voice conversation
+
+### Memory
+
+* Store user preferences
+* Remember common folders, apps, and routines
+* Keep useful conversation and task history
+* Use SQLite and vector search for long-term memory
+
+### Screen Understanding
+
+* Screenshot analysis
+* OCR
+* Computer vision for UI awareness
+* Context-aware assistance
+
+### Mobile Companion
+
+* Android app or mobile companion service
+* Remote commands from phone to PC
+* Notifications
+* Calling and messaging integrations with explicit permission
 
 ## Technologies
 
@@ -53,34 +147,20 @@ The goal of IRA is to build an assistant capable of understanding natural langua
 * SQLite
 * ChromaDB
 
-## Vision
+## Safety Rules
 
-IRA is designed to evolve into a fully capable AI operating companion that integrates seamlessly into daily digital life. The project focuses on creating a smart assistant that can learn user preferences, automate repetitive tasks, assist with productivity, and provide intelligent real-time support.
+IRA should ask for confirmation before sensitive actions, including:
 
-## Future Goals
-
-* Advanced long-term memory
-* Autonomous multi-step task execution
-* Real-time voice conversations
-* AI-powered coding assistant
-* Personalized learning behavior
-* Cross-device synchronization
-* Smart productivity systems
-* Multi-agent collaboration
-* Full desktop environment integration
+* Sending messages or emails
+* Calling someone
+* Deleting or moving files
+* Accessing private accounts
+* Making purchases
+* Running system-level commands
 
 ## Status
 
-Currently under active development.
-
-## Inspiration
-
-Inspired by:
-
-* J.A.R.V.I.S (Marvel)
-* FRIDAY (Marvel)
-* Samantha from *Her*
-* Modern autonomous AI agents
+Currently under active development. The project has begun with a backend command prototype.
 
 ## Disclaimer
 
