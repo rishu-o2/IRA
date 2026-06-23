@@ -173,6 +173,56 @@ body::before {
   pointer-events: none;
 }
 
+.command-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 420px) auto;
+  gap: 10px;
+  width: min(88vw, 540px);
+  transform: translateX(-50%);
+}
+
+.command-bar input,
+.command-bar button {
+  min-height: 44px;
+  border: 1px solid rgba(145, 247, 255, 0.34);
+  border-radius: 8px;
+  background: rgba(3, 10, 22, 0.78);
+  color: #effdff;
+  font: inherit;
+  letter-spacing: 0;
+  box-shadow: 0 0 22px rgba(0, 229, 255, 0.12);
+}
+
+.command-bar input {
+  width: 100%;
+  padding: 0 14px;
+  outline: none;
+}
+
+.command-bar input:focus {
+  border-color: rgba(145, 247, 255, 0.82);
+  box-shadow: 0 0 26px rgba(0, 229, 255, 0.28);
+}
+
+.command-bar input::placeholder {
+  color: rgba(223, 252, 255, 0.56);
+}
+
+.command-bar button {
+  padding: 0 18px;
+  color: #dffcff;
+  cursor: pointer;
+}
+
+.command-bar button:hover {
+  border-color: rgba(223, 252, 255, 0.82);
+  background: rgba(12, 36, 58, 0.88);
+}
+
 .face-status {
   align-self: start;
   display: block;
@@ -210,5 +260,10 @@ body::before {
   .voice-core {
     width: 44%;
     height: 44%;
+  }
+
+  .command-bar {
+    bottom: 18px;
+    grid-template-columns: 1fr;
   }
 }

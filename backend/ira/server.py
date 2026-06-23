@@ -5,9 +5,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .assistant import IRAAssistant
-from .face import FaceRecognitionError, detect_faces
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8765
 
 
@@ -29,10 +28,6 @@ class IRARequestHandler(BaseHTTPRequestHandler):
             self._handle_command()
             return
 
-        if self.path == "/face-recognition":
-            self._handle_face_recognition()
-            return
-
         self._send_json({"ok": False, "error": "Not found"}, status=404)
 
     def _handle_command(self) -> None:
@@ -49,27 +44,6 @@ class IRARequestHandler(BaseHTTPRequestHandler):
                 "ok": response.handled,
                 "text": response.text,
                 "handled": response.handled,
-            }
-        )
-
-    def _handle_face_recognition(self) -> None:
-        try:
-            payload = self._read_json()
-            image = str(payload.get("image", "")).strip()
-            result = detect_faces(image)
-        except json.JSONDecodeError:
-            self._send_json({"ok": False, "error": "Invalid JSON"}, status=400)
-            return
-        except FaceRecognitionError as exc:
-            self._send_json({"ok": False, "error": str(exc)}, status=400)
-            return
-
-        self._send_json(
-            {
-                "ok": True,
-                "recognized": result.recognized,
-                "faces": result.faces,
-                "text": result.message,
             }
         )
 
@@ -97,15 +71,31 @@ class IRARequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+        origin = self.headers.get("Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Credentials", "true")
 
 
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), IRARequestHandler)
+    
+    # Get local IP for network access
+    local_ip = HOST if HOST != "0.0.0.0" else "127.0.0.1"
+    try:
+        import socket
+        # Get the actual local network IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    
     print(f"IRA backend server listening on http://{HOST}:{PORT}")
-    print("Frontend can now send commands to /command.")
+    print(f"Network accessible at: http://{local_ip}:{PORT}")
+    print(f"Frontend can send commands to /command.")
 
     try:
         server.serve_forever()

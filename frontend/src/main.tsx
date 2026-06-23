@@ -9,9 +9,37 @@ type FaceDetector = {
   detect: (source: CanvasImageSource) => Promise<unknown[]>;
 };
 
+type SpeechRecognitionConstructor = new () => SpeechRecognition;
+
+type SpeechRecognition = EventTarget & {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionEvent = {
+  resultIndex: number;
+  results: {
+    length: number;
+    [index: number]: {
+      isFinal: boolean;
+      [index: number]: {
+        transcript: string;
+      };
+    };
+  };
+};
+
 declare global {
   interface Window {
     FaceDetector?: FaceDetectorConstructor;
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
   }
 }
 
@@ -39,18 +67,55 @@ function pickFemaleVoice(voices: SpeechSynthesisVoice[]) {
   );
 }
 
+function cleanVoiceCommand(transcript: string) {
+  return transcript
+    .trim()
+    .replace(/[.!?]+$/g, "")
+    .replace(/\b(hey|hello|hi)\s+ira\b/i, "ira")
+    .replace(/\bira\b[:,]?\s*/i, "")
+    .trim();
+}
+
+function getBackendURL(): string {
+  // For now, use localhost since backend and frontend run on same machine
+  // The backend listens on 0.0.0.0:8765 so both localhost and network IP work
+  return "http://localhost:8765";
+}
+
 function App() {
   const [status, setStatus] = useState("IRA ONLINE");
-  const [faceStatus, setFaceStatus] = useState("FACE ID STARTING");
+  const [faceStatus, setFaceStatusState] = useState("FACE ID STARTING");
+  const [voiceStatus, setVoiceStatus] = useState("VOICE STARTING");
+  const [lastHeard, setLastHeard] = useState("");
+  const [typedCommand, setTypedCommand] = useState("");
   const [isFaceScanning, setIsFaceScanning] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const autoStartedRef = useRef(false);
-  const faceScanInFlightRef = useRef(false);
   const faceScanTimerRef = useRef<number | null>(null);
+  const faceStatusRef = useRef("FACE ID STARTING");
+  const hasWelcomedFaceRef = useRef(false);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const shouldListenRef = useRef(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const faceDetectorRef = useRef<FaceDetector | null>(null);
+  const cameraStartingRef = useRef(false);
+  const voiceRestartTimerRef = useRef<number | null>(null);
+  const voiceErrorCountRef = useRef(0);
+  const backendURLRef = useRef(getBackendURL());
+  const cameraRetryTimerRef = useRef<number | null>(null);
+  const cameraRetryCountRef = useRef(0);
+
+  function setFaceStatus(value: string) {
+    faceStatusRef.current = value;
+    setFaceStatusState(value);
+  }
 
   useEffect(() => {
+    shouldListenRef.current = true;
+
     const loadVoices = () => {
       setVoices(window.speechSynthesis.getVoices());
     };
@@ -59,25 +124,57 @@ function App() {
     window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
 
     return () => {
+      shouldListenRef.current = false;
+      autoStartedRef.current = false;
       window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
       window.speechSynthesis.cancel();
+      micStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recognitionRef.current?.stop();
       stopFaceRecognition();
+      
+      // Clean up any pending timers
+      if (voiceRestartTimerRef.current !== null) {
+        window.clearTimeout(voiceRestartTimerRef.current);
+      }
+      if (cameraRetryTimerRef.current !== null) {
+        window.clearTimeout(cameraRetryTimerRef.current);
+      }
     };
   }, []);
 
   useEffect(() => {
+    shouldListenRef.current = true;
+
     if (autoStartedRef.current) {
       return;
     }
 
     autoStartedRef.current = true;
     startFaceRecognition();
+    startVoiceSystem();
   }, []);
+
+  async function startVoiceSystem() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      setVoiceStatus("MIC ONLINE");
+      window.setTimeout(() => startVoiceRecognition(), 350);
+    } catch {
+      setVoiceStatus("MIC PERMISSION NEEDED");
+      setStatus("ALLOW MICROPHONE");
+    }
+  }
 
   function stopFaceRecognition() {
     if (faceScanTimerRef.current !== null) {
       window.clearInterval(faceScanTimerRef.current);
       faceScanTimerRef.current = null;
+    }
+
+    if (cameraRetryTimerRef.current !== null) {
+      window.clearTimeout(cameraRetryTimerRef.current);
+      cameraRetryTimerRef.current = null;
     }
 
     const stream = videoRef.current?.srcObject;
@@ -89,10 +186,14 @@ function App() {
       videoRef.current.srcObject = null;
     }
 
+    faceDetectorRef.current = null;
+    cameraStartingRef.current = false;
+    cameraRetryCountRef.current = 0;
     setIsFaceScanning(false);
   }
 
   function speak(text: string) {
+    recognitionRef.current?.stop();
     window.speechSynthesis.cancel();
 
     const utterance = new SpeechSynthesisUtterance(text);
@@ -103,150 +204,361 @@ function App() {
     utterance.onstart = () => {
       setIsSpeaking(true);
       setStatus("IRA SPEAKING");
+      setVoiceStatus("REPLYING");
     };
     utterance.onend = () => {
       setIsSpeaking(false);
       setStatus("IRA ONLINE");
+      if (shouldListenRef.current) {
+        window.setTimeout(() => startVoiceRecognition(), 450);
+      }
     };
 
     window.speechSynthesis.speak(utterance);
   }
 
-async function startFaceRecognition() {
-    if (isFaceScanning) {
+  function startVoiceRecognition() {
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+
+    if (!Recognition) {
+      setVoiceStatus("VOICE NOT SUPPORTED");
+      return;
+    }
+
+    // Clear any pending restart timers
+    if (voiceRestartTimerRef.current !== null) {
+      window.clearTimeout(voiceRestartTimerRef.current);
+      voiceRestartTimerRef.current = null;
+    }
+
+    if (recognitionRef.current || window.speechSynthesis.speaking) {
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    recognition.maxAlternatives = 1;
+
+    let hasDetectedSpeech = false;
+
+    recognition.onstart = () => {
+      voiceErrorCountRef.current = 0;
+      setIsVoiceListening(true);
+      setVoiceStatus("LISTENING");
+      setStatus("VOICE ONLINE");
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let transcript = "";
+
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        transcript += event.results[index][0].transcript;
+      }
+
+      const heard = transcript.trim();
+      if (heard) {
+        hasDetectedSpeech = true;
+        setLastHeard(heard);
+        setVoiceStatus("HEARD YOU");
+      }
+
+      const lastResult = event.results[event.results.length - 1];
+      if (lastResult?.isFinal && heard) {
+        recognition.stop();
+        handleVoiceCommand(heard);
+      }
+    };
+
+    recognition.onerror = (event: { error: string }) => {
+      recognitionRef.current = null;
+      setIsVoiceListening(false);
+      const errorType = event.error;
+
+      // Handle permission errors
+      if (errorType === "not-allowed") {
+        setVoiceStatus("MIC PERMISSION NEEDED");
+        setStatus("ALLOW MICROPHONE");
+        return;
+      }
+
+      // Handle no microphone detected
+      if (errorType === "audio-capture" || errorType === "no-microphone") {
+        setVoiceStatus("NO MIC DETECTED");
+        if (shouldListenRef.current) {
+          voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 3000);
+        }
+        return;
+      }
+
+      // Handle no speech detected - retry after longer delay
+      if (errorType === "no-speech" || errorType === "timeout") {
+        voiceErrorCountRef.current += 1;
+        
+        // If we had many consecutive no-speech errors, give it more time
+        const delayMs = voiceErrorCountRef.current > 2 ? 2000 : 1200;
+        
+        setVoiceStatus("LISTENING (NO SPEECH YET)");
+        if (shouldListenRef.current) {
+          voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), delayMs);
+        }
+        return;
+      }
+
+      // Handle network errors with exponential backoff
+      if (errorType === "network" || errorType === "service-unavailable") {
+        voiceErrorCountRef.current += 1;
+        const delayMs = Math.min(1000 * voiceErrorCountRef.current, 5000);
+        
+        setVoiceStatus("NETWORK ISSUE - RETRYING");
+        if (shouldListenRef.current) {
+          voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), delayMs);
+        }
+        return;
+      }
+
+      // Handle other errors
+      setVoiceStatus("VOICE ERROR: RECOVERING");
+      if (shouldListenRef.current) {
+        voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 2000);
+      }
+    };
+
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setIsVoiceListening(false);
+
+      // Only auto-restart if we're supposed to listen and synthesis isn't active
+      if (shouldListenRef.current && !window.speechSynthesis.speaking) {
+        // Give a small delay before restarting to avoid immediate restart loop
+        voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 500);
+      }
+    };
+
+    setIsVoiceListening(true);
+    setVoiceStatus("LISTENING");
+    setStatus("VOICE ONLINE");
+    recognition.start();
+  }
+
+  async function handleVoiceCommand(transcript: string) {
+    const command = cleanVoiceCommand(transcript);
+    await runAssistantCommand(command);
+  }
+
+  async function submitTypedCommand(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const command = typedCommand.trim();
+    if (!command) {
+      return;
+    }
+
+    setTypedCommand("");
+    setLastHeard(command);
+    await runAssistantCommand(command);
+  }
+
+  async function runAssistantCommand(command: string) {
+    const lowered = command.toLowerCase();
+
+    if (!command || lowered === "ira") {
+      speak("Yes. I am here.");
+      return;
+    }
+
+    if (lowered.includes("can you see me") || lowered.includes("do you see me") || lowered.includes("see me")) {
+      speak(faceVisibilityReply());
+      return;
+    }
+
+    if (lowered.includes("hello") || lowered.includes("hi")) {
+      speak("Hello. IRA is online and listening.");
+      return;
+    }
+
+    if (lowered.includes("who are you")) {
+      speak("I am IRA, your Intelligent Responsive Assistant.");
+      return;
+    }
+
+    if (lowered.includes("what can you do") || lowered.includes("help")) {
+      speak("I can listen to your voice, answer you, check the camera, and send desktop commands to my backend.");
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 }
-        },
+      setStatus("EXECUTING COMMAND");
+      setVoiceStatus("PROCESSING");
+      const response = await sendCommandToBackend(command);
+      speak(response);
+    } catch {
+      speak("My backend command bridge is not connected. Start the backend server and I can do more work for you.");
+    }
+  }
+
+  function faceVisibilityReply() {
+    const currentFaceStatus = faceStatusRef.current;
+
+    if (currentFaceStatus === "USER RECOGNIZED") {
+      return "Yes. I can see your face.";
+    }
+
+    if (currentFaceStatus === "SEARCHING FACE") {
+      return "My camera is active, but I have not clearly detected your face yet.";
+    }
+
+    if (currentFaceStatus === "CAMERA ACTIVE") {
+      return "The camera is active. Your browser does not support local face detection, so I can access the camera but cannot confirm a face.";
+    }
+
+    if (currentFaceStatus === "CAMERA BLOCKED") {
+      return "I cannot see you because camera permission is blocked.";
+    }
+
+    return "I am still starting the camera scan.";
+  }
+
+  async function sendCommandToBackend(command: string) {
+    const response = await fetch(`${backendURLRef.current}/command`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ message: command })
+    });
+
+    if (!response.ok) {
+      throw new Error("Backend command failed");
+    }
+
+    const payload = (await response.json()) as { text?: string };
+    return payload.text ?? "Command completed.";
+  }
+
+  async function startFaceRecognition() {
+    if (isFaceScanning || cameraStartingRef.current) {
+      return;
+    }
+
+    if (cameraRetryTimerRef.current !== null) {
+      window.clearTimeout(cameraRetryTimerRef.current);
+      cameraRetryTimerRef.current = null;
+    }
+
+    cameraStartingRef.current = true;
+
+    try {
+      const existingStream = videoRef.current?.srcObject;
+      if (existingStream instanceof MediaStream) {
+        existingStream.getTracks().forEach((track) => track.stop());
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+      }
+
+      setFaceStatus("REQUESTING CAMERA ACCESS");
+      setStatus("CAMERA STARTING");
+      console.log("[IRA] Requesting camera access...");
+
+      const constraints = {
+        video: true,
         audio: false
-      });
+      };
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (innerError) {
+        console.warn("[IRA] Initial camera request failed, retrying with simple constraints.", innerError);
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
 
       if (!videoRef.current) {
-        return;
+        throw new Error("Video element is not mounted");
       }
 
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
 
-      const detector = window.FaceDetector ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 }) : null;
+      cameraRetryCountRef.current = 0;
+      faceDetectorRef.current = window.FaceDetector ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 }) : null;
       setIsFaceScanning(true);
-      setFaceStatus("GOOGLE FACE SCAN");
+      setFaceStatus(faceDetectorRef.current ? "LOCAL FACE SCAN" : "CAMERA ACTIVE");
       setStatus("FACE RECOGNITION ACTIVE");
+      console.log("[IRA] Camera stream started successfully.");
 
       faceScanTimerRef.current = window.setInterval(async () => {
         if (!videoRef.current || videoRef.current.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
           return;
         }
 
-        if (faceScanInFlightRef.current) {
-          return;
-        }
-
-        faceScanInFlightRef.current = true;
-
         try {
-          const result = await scanFaceWithBackend(videoRef.current);
+          if (!faceDetectorRef.current) {
+            setFaceStatus("CAMERA ACTIVE");
+            return;
+          }
 
-          if (result.recognized) {
+          const faces = await faceDetectorRef.current.detect(videoRef.current);
+
+          if (faces.length > 0) {
             setFaceStatus("USER RECOGNIZED");
             setStatus("ACCESS CONFIRMED");
-            speak("Face recognized. Welcome back.");
-            stopFaceRecognition();
-          } else {
-            setFaceStatus("SEARCHING FACE");
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "";
-
-          if (message.includes("Cloud Vision API is disabled")) {
-            setFaceStatus("VISION API DISABLED");
-            setStatus("ENABLE GOOGLE VISION");
-            stopFaceRecognition();
-            return;
-          }
-
-          if (message.includes("permission denied")) {
-            setFaceStatus("VISION PERMISSION DENIED");
-            setStatus("CHECK GOOGLE API KEY");
-            stopFaceRecognition();
-            return;
-          }
-
-          if (message.includes("billing is disabled")) {
-            setFaceStatus("BILLING DISABLED");
-            setStatus("ENABLE GOOGLE BILLING");
-            stopFaceRecognition();
-            return;
-          }
-
-          try {
-            if (!detector || !videoRef.current) {
-              setFaceStatus("BACKEND OFFLINE");
-              return;
+            if (!hasWelcomedFaceRef.current) {
+              hasWelcomedFaceRef.current = true;
+              speak("I can see you. Face recognized.");
             }
-
-            const faces = await detector.detect(videoRef.current);
-
-            if (faces.length > 0) {
-              setFaceStatus("USER RECOGNIZED");
-              setStatus("ACCESS CONFIRMED");
-              speak("Face recognized. Welcome back.");
-              stopFaceRecognition();
-            } else {
-              setFaceStatus("SEARCHING FACE");
-            }
-          } catch {
-            setFaceStatus("FACE SCAN ERROR");
-            stopFaceRecognition();
+            return;
           }
-        } finally {
-          faceScanInFlightRef.current = false;
+
+          setFaceStatus("SEARCHING FACE");
+        } catch (detectorError) {
+          console.error("[IRA] Face detector error:", detectorError);
+          setFaceStatus("CAMERA ACTIVE");
+          setStatus("FACE RECOGNITION ACTIVE");
         }
-      }, 2200);
-    } catch {
-      setFaceStatus("CAMERA BLOCKED");
-      setStatus("CAMERA PERMISSION NEEDED");
-      speak("Camera access is blocked. Please allow camera permission for face recognition.");
+      }, 1800);
+    } catch (error) {
+      const err = error as any;
+      const errorName = err?.name || "Unknown";
+      const errorMessage = err?.message || String(err);
+      console.error("[IRA] Camera access error:", errorName, errorMessage);
+      setFaceStatus(`CAMERA ERROR: ${errorName}`);
+
+      cameraRetryCountRef.current += 1;
+      const maxRetries = 5;
+      const delay = Math.min(2000 * cameraRetryCountRef.current, 10000);
+
+      if (errorName === "NotAllowedError" || errorName === "SecurityError") {
+        setStatus("CAMERA PERMISSION DENIED");
+        speak("Camera access is blocked. Please allow camera permission in your system settings.");
+      } else if (errorName === "NotFoundError") {
+        setStatus("NO CAMERA DEVICE");
+        speak("No camera device found on your computer.");
+      } else if (errorName === "NotReadableError") {
+        setStatus("CAMERA BUSY");
+        setFaceStatus("CAMERA BUSY");
+        if (cameraRetryCountRef.current <= maxRetries) {
+          cameraRetryTimerRef.current = window.setTimeout(() => startFaceRecognition(), delay);
+        } else {
+          speak("The camera is busy or locked. Close any other camera apps and reload IRA.");
+        }
+      } else {
+        if (cameraRetryCountRef.current <= maxRetries) {
+          setStatus("CAMERA RETRYING");
+          cameraRetryTimerRef.current = window.setTimeout(() => startFaceRecognition(), delay);
+        } else {
+          setStatus("CAMERA ERROR");
+          speak("Camera access failed. Please check your camera settings and restart the app.");
+        }
+      }
+
       stopFaceRecognition();
+    } finally {
+      cameraStartingRef.current = false;
     }
-  }
-
-  async function scanFaceWithBackend(video: HTMLVideoElement) {
-    const image = captureVideoFrame(video);
-    const response = await fetch("http://127.0.0.1:8765/face-recognition", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ image })
-    });
-
-    if (!response.ok) {
-      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
-      throw new Error(payload?.error ?? "Face backend request failed");
-    }
-
-    return (await response.json()) as { recognized: boolean; faces: number; text: string };
-  }
-
-  function captureVideoFrame(video: HTMLVideoElement) {
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Unable to capture camera frame");
-    }
-
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.72);
   }
 
   return (
@@ -256,15 +568,28 @@ async function startFaceRecognition() {
         <span>INTELLIGENT RESPONSIVE ASSISTANT</span>
       </div>
       <section
-        className={`ira-stage ${isSpeaking ? "is-speaking" : ""} ${isFaceScanning ? "is-face-scanning" : ""}`}
+        className={`ira-stage ${isVoiceListening ? "is-listening" : ""} ${isSpeaking ? "is-speaking" : ""} ${
+          isFaceScanning ? "is-face-scanning" : ""
+        }`}
       >
         <IraAvatar3D />
         <video ref={videoRef} className="face-video" playsInline muted aria-hidden="true" />
         <div className="voice-core" aria-live="polite" aria-label="IRA status">
           <span className="voice-status">{status}</span>
+          <span className="face-status">{voiceStatus}</span>
           <span className="face-status">{faceStatus}</span>
+          {lastHeard ? <span className="voice-transcript">{lastHeard}</span> : null}
         </div>
       </section>
+      <form className="command-bar" onSubmit={submitTypedCommand}>
+        <input
+          aria-label="Type an IRA command"
+          placeholder="Type a command..."
+          value={typedCommand}
+          onChange={(event) => setTypedCommand(event.target.value)}
+        />
+        <button type="submit">Send</button>
+      </form>
     </main>
   );
 }
