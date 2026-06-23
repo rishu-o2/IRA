@@ -17,9 +17,20 @@ def load_env_file() -> None:
             continue
 
         key, value = clean_line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        clean_key = key.strip().lstrip("\ufeff")
+        os.environ.setdefault(clean_key, value.strip().strip('"').strip("'"))
 
 
 def google_api_key() -> str | None:
     load_env_file()
     return os.environ.get("GOOGLE_API_KEY")
+
+
+def openai_api_key() -> str | None:
+    load_env_file()
+    return os.environ.get("OPENAI_API_KEY")
+
+
+def openai_model() -> str:
+    load_env_file()
+    return os.environ.get("OPENAI_MODEL", "gpt-4o-mini")

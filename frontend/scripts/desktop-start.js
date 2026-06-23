@@ -51,9 +51,17 @@ function spawnVite() {
 }
 
 function spawnElectron() {
-  const electronCmd = process.platform === "win32" ? path.join("node_modules", ".bin", "electron.cmd") : path.join("node_modules", ".bin", "electron");
-  const child = spawn(electronCmd, ["."], {
+  const electronCmd = require("electron");
+  const electronArgs = [".", ...process.argv.slice(2)];
+  const electronEnv = { ...process.env };
+
+  delete electronEnv.ELECTRON_RUN_AS_NODE;
+  delete electronEnv.ELECTRON_NO_ATTACH_CONSOLE;
+
+  const child = spawn(electronCmd, electronArgs, {
+    env: electronEnv,
     stdio: "inherit",
+    windowsHide: false,
     shell: false,
   });
   child.on("exit", (code) => {

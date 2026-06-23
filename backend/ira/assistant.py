@@ -4,6 +4,7 @@ from datetime import datetime
 from dataclasses import dataclass
 
 from .actions import ActionError, open_app, open_known_folder, open_path, open_website, play_youtube_search, search_web
+from .conversation import ConversationError, OpenAIConversation
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,9 @@ class AssistantResponse:
 
 
 class IRAAssistant:
+    def __init__(self, conversation: OpenAIConversation | None = None) -> None:
+        self.conversation = conversation or OpenAIConversation()
+
     def handle(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
         lowered = command.lower()
@@ -21,10 +25,7 @@ class IRAAssistant:
             return AssistantResponse("I'm here. Tell me what you want to do.", handled=False)
 
         try:
-            if lowered in {"hi", "hello", "hey"}:
-                return AssistantResponse("Hello. IRA is online and ready.")
-
-            if lowered in {"help", "commands", "what can you do", "what can you do for me"}:
+            if lowered in {"commands"}:
                 return AssistantResponse(self._help_text())
 
             if lowered in {"time", "what time is it", "tell me the time", "current time"}:
@@ -35,6 +36,10 @@ class IRAAssistant:
 
             if lowered.startswith(("launch ", "start ")):
                 app_name = command.split(" ", 1)[1].strip()
+                return AssistantResponse(open_app(app_name))
+
+            if lowered.startswith(("open application ", "open app ", "open program ")):
+                app_name = command.split(" ", 2)[2].strip()
                 return AssistantResponse(open_app(app_name))
 
             if lowered.startswith("go to "):
@@ -110,10 +115,16 @@ class IRAAssistant:
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)
 
-        return AssistantResponse(
-            "I can open apps, folders, websites, search Google, play YouTube results, and tell the time. Try saying open notepad, search for AI news, or play relaxing music.",
-            handled=False,
-        )
+        if self._looks_sensitive_or_unsupported(lowered):
+            return AssistantResponse(
+                "I cannot complete that action yet. I can talk, open apps and websites, search Google, play YouTube results, and open files or folders.",
+                handled=False,
+            )
+
+        try:
+            return AssistantResponse(self.conversation.reply(command))
+        except ConversationError as exc:
+            return AssistantResponse(str(exc), handled=False)
 
     def _normalize_command(self, message: str) -> str:
         command = " ".join(message.strip().split())
@@ -155,6 +166,23 @@ class IRAAssistant:
             "music",
             "videos",
         }
+
+    def _looks_sensitive_or_unsupported(self, lowered: str) -> bool:
+        return lowered.startswith(
+            (
+                "send message",
+                "send email",
+                "email ",
+                "call ",
+                "delete ",
+                "remove ",
+                "move ",
+                "buy ",
+                "purchase ",
+                "pay ",
+                "transfer ",
+            )
+        )
 
     def _help_text(self) -> str:
         return "\n".join(

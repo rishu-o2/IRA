@@ -1,14 +1,18 @@
-const { app, BrowserWindow, session } = require("electron");
+const { app, BrowserWindow, ipcMain, session } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const readline = require("node:readline");
 
 app.commandLine.appendSwitch("enable-experimental-web-platform-features");
+app.commandLine.appendSwitch("enable-features", "WebSpeechAPI");
 app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
 app.commandLine.appendSwitch("disable-gpu-program-cache");
 
-const isDev = !app.isPackaged;
+const shouldLoadFile = app.isPackaged || process.argv.includes("--load-file") || process.env.IRA_LOAD_FILE === "1";
+const startMinimized = process.argv.includes("--start-minimized") || process.env.IRA_START_MINIMIZED === "1";
+let mainWindow = null;
 
 // Get the local dev server URL
 const getDevServerURL = () => {
@@ -21,6 +25,8 @@ const getDevServerURL = () => {
 
 const devServerURL = getDevServerURL();
 let backendProcess = null;
+let speechProcess = null;
+let speechRestartTimer = null;
 
 const allowMediaPermission = (permission) => {
   return ["camera", "microphone", "media", "videoCapture", "audioCapture"].includes(permission);
@@ -121,12 +127,69 @@ async function startBackend() {
   return false;
 }
 
+function sendSpeechEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("ira:speech-event", event);
+  }
+}
+
+function startNativeSpeech() {
+  if (process.platform !== "win32" || speechProcess) {
+    return;
+  }
+
+  const scriptPath = path.resolve(__dirname, "..", "scripts", "windows-speech-listener.ps1");
+  const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+
+  speechProcess = spawn(
+    powershell,
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+    {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+
+  sendSpeechEvent({ type: "status", status: "NATIVE VOICE STARTING" });
+
+  const speechLines = readline.createInterface({ input: speechProcess.stdout });
+  speechLines.on("line", (line) => {
+    try {
+      sendSpeechEvent(JSON.parse(line));
+    } catch {
+      sendSpeechEvent({ type: "status", status: line.trim() || "NATIVE LISTENING" });
+    }
+  });
+
+  speechProcess.stderr.on("data", (chunk) => {
+    const message = chunk.toString().trim();
+    if (message) {
+      sendSpeechEvent({ type: "error", error: message });
+    }
+  });
+
+  speechProcess.on("error", (error) => {
+    sendSpeechEvent({ type: "error", error: error.message });
+    speechProcess = null;
+  });
+
+  speechProcess.on("exit", () => {
+    speechProcess = null;
+    sendSpeechEvent({ type: "status", status: "NATIVE VOICE RESTARTING" });
+
+    if (!app.isQuitting) {
+      speechRestartTimer = setTimeout(startNativeSpeech, 2000);
+    }
+  });
+}
+
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1120,
     height: 760,
     minWidth: 880,
     minHeight: 620,
+    show: !startMinimized,
     title: "IRA",
     backgroundColor: "#0f1412",
     webPreferences: {
@@ -138,32 +201,94 @@ function createWindow() {
     }
   });
 
-  if (isDev) {
-    win.loadURL(devServerURL);
+  mainWindow.on("close", (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
+  if (shouldLoadFile) {
+    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   } else {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    mainWindow.loadURL(devServerURL);
   }
+
+  mainWindow.once("ready-to-show", () => {
+    if (startMinimized) {
+      mainWindow.hide();
+      return;
+    }
+
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+const singleInstanceLock = app.requestSingleInstanceLock();
+
+if (!singleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    showMainWindow();
+  });
 }
 
 app.whenReady().then(async () => {
   setupPermissions();
+  ipcMain.handle("ira:show-window", () => {
+    showMainWindow();
+  });
+  ipcMain.handle("ira:native-speech-supported", () => process.platform === "win32");
+  app.setLoginItemSettings({
+    openAtLogin: true,
+    args: ["--start-minimized"]
+  });
   await startBackend();
   createWindow();
+  startNativeSpeech();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+    } else {
+      showMainWindow();
     }
   });
 });
 
 app.on("window-all-closed", () => {
+  if (process.platform === "darwin") {
+    return;
+  }
+});
+
+app.on("before-quit", () => {
+  app.isQuitting = true;
+
   if (backendProcess) {
     backendProcess.kill();
     backendProcess = null;
   }
 
-  if (process.platform !== "darwin") {
-    app.quit();
+  if (speechRestartTimer) {
+    clearTimeout(speechRestartTimer);
+    speechRestartTimer = null;
+  }
+
+  if (speechProcess) {
+    speechProcess.kill();
+    speechProcess = null;
   }
 });

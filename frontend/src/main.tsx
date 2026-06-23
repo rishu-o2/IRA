@@ -45,9 +45,23 @@ type BackendFaceResult = {
   error?: string;
 };
 
+type DesktopSpeechEvent = {
+  type: "status" | "transcript" | "error";
+  status?: string;
+  text?: string;
+  confidence?: number;
+  error?: string;
+};
+
 declare global {
   interface Window {
     FaceDetector?: FaceDetectorConstructor;
+    iraDesktop?: {
+      platform: string;
+      nativeSpeechSupported: () => Promise<boolean>;
+      onSpeechEvent: (callback: (event: DesktopSpeechEvent) => void) => () => void;
+      showWindow: () => Promise<void>;
+    };
     SpeechRecognition?: SpeechRecognitionConstructor;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
   }
@@ -86,6 +100,10 @@ function cleanVoiceCommand(transcript: string) {
     .trim();
 }
 
+function isWakePhrase(transcript: string) {
+  return /^\s*(hey|hello|hi)\s*,?\s+ira\b/i.test(transcript.trim());
+}
+
 function getBackendURL(): string {
   const host = window.location.hostname;
 
@@ -107,6 +125,8 @@ function App() {
   const [isVoiceListening, setIsVoiceListening] = useState(false);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const autoStartedRef = useRef(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioLevelTimerRef = useRef<number | null>(null);
   const faceScanTimerRef = useRef<number | null>(null);
   const faceStatusRef = useRef("FACE ID STARTING");
   const hasWelcomedFaceRef = useRef(false);
@@ -135,16 +155,44 @@ function App() {
       setVoices(window.speechSynthesis.getVoices());
     };
 
+    const stopNativeSpeechEvents = window.iraDesktop?.onSpeechEvent?.((event) => {
+      if (event.type === "status") {
+        setVoiceStatus(event.status || "NATIVE LISTENING");
+        setStatus("VOICE ONLINE");
+        setIsVoiceListening(true);
+        return;
+      }
+
+      if (event.type === "error") {
+        setVoiceStatus("NATIVE VOICE ERROR");
+        setStatus("CHECK MICROPHONE");
+        if (event.error) {
+          setLastHeard(event.error);
+        }
+        return;
+      }
+
+      if (event.type === "transcript" && event.text?.trim()) {
+        const transcript = event.text.trim();
+        setLastHeard(transcript);
+        setVoiceStatus("HEARD YOU");
+        setStatus("PROCESSING VOICE");
+        void handleVoiceCommand(transcript);
+      }
+    });
+
     loadVoices();
     window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
 
     return () => {
       shouldListenRef.current = false;
       autoStartedRef.current = false;
+      stopNativeSpeechEvents?.();
       window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
       window.speechSynthesis.cancel();
       micStreamRef.current?.getTracks().forEach((track) => track.stop());
       recognitionRef.current?.stop();
+      stopMicLevelMonitor();
       stopFaceRecognition();
       
       // Clean up any pending timers
@@ -166,6 +214,14 @@ function App() {
 
     autoStartedRef.current = true;
     startFaceRecognition();
+
+    if (window.iraDesktop?.platform === "win32") {
+      setVoiceStatus("NATIVE VOICE STARTING");
+      setStatus("VOICE ONLINE");
+      setIsVoiceListening(true);
+      return;
+    }
+
     startVoiceSystem();
   }, []);
 
@@ -173,21 +229,75 @@ function App() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
-      setVoiceStatus("MIC ONLINE");
+      startMicLevelMonitor(stream);
       window.setTimeout(() => startVoiceRecognition(), 350);
-    } catch {
-      setVoiceStatus("MIC PERMISSION NEEDED");
+    } catch (error) {
+      const errorName = error instanceof DOMException ? error.name : "Unknown";
+      if (errorName === "NotFoundError") {
+        setVoiceStatus("NO MIC DETECTED");
+        setStatus("CHECK MICROPHONE");
+        return;
+      }
+
+      if (errorName === "NotReadableError") {
+        setVoiceStatus("MIC BUSY");
+        setStatus("CLOSE OTHER MIC APPS");
+        return;
+      }
+
+      setVoiceStatus(`MIC ERROR: ${errorName}`);
       setStatus("ALLOW MICROPHONE");
     }
   }
 
-  function stopFaceRecognition() {
+  function stopMicLevelMonitor() {
+    if (audioLevelTimerRef.current !== null) {
+      window.clearInterval(audioLevelTimerRef.current);
+      audioLevelTimerRef.current = null;
+    }
+
+    void audioContextRef.current?.close();
+    audioContextRef.current = null;
+  }
+
+  function startMicLevelMonitor(stream: MediaStream) {
+    stopMicLevelMonitor();
+
+    const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
+    if (!AudioContextConstructor) {
+      setVoiceStatus("MIC ONLINE");
+      return;
+    }
+
+    const audioContext = new AudioContextConstructor();
+    const analyser = audioContext.createAnalyser();
+    const source = audioContext.createMediaStreamSource(stream);
+    const samples = new Uint8Array(analyser.frequencyBinCount);
+
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    audioContextRef.current = audioContext;
+
+    setVoiceStatus("MIC ONLINE");
+    audioLevelTimerRef.current = window.setInterval(() => {
+      analyser.getByteFrequencyData(samples);
+      const peak = samples.reduce((max, sample) => Math.max(max, sample), 0);
+
+      if (peak > 18 && !recognitionRef.current && !window.speechSynthesis.speaking) {
+        setVoiceStatus("MIC HEARS AUDIO");
+      }
+    }, 700);
+  }
+
+  function stopFaceRecognition(options: { clearRetryTimer?: boolean; resetRetryCount?: boolean } = {}) {
+    const { clearRetryTimer = true, resetRetryCount = true } = options;
+
     if (faceScanTimerRef.current !== null) {
       window.clearInterval(faceScanTimerRef.current);
       faceScanTimerRef.current = null;
     }
 
-    if (cameraRetryTimerRef.current !== null) {
+    if (clearRetryTimer && cameraRetryTimerRef.current !== null) {
       window.clearTimeout(cameraRetryTimerRef.current);
       cameraRetryTimerRef.current = null;
     }
@@ -203,7 +313,9 @@ function App() {
 
     faceDetectorRef.current = null;
     cameraStartingRef.current = false;
-    cameraRetryCountRef.current = 0;
+    if (resetRetryCount) {
+      cameraRetryCountRef.current = 0;
+    }
     setIsFaceScanning(false);
   }
 
@@ -236,7 +348,9 @@ function App() {
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
 
     if (!Recognition) {
-      setVoiceStatus("VOICE NOT SUPPORTED");
+      setIsVoiceListening(false);
+      setVoiceStatus("SPEECH RECOGNITION MISSING");
+      setStatus("TYPE COMMANDS FOR NOW");
       return;
     }
 
@@ -250,7 +364,15 @@ function App() {
       return;
     }
 
-    const recognition = new Recognition();
+    let recognition: SpeechRecognition;
+    try {
+      recognition = new Recognition();
+    } catch {
+      setIsVoiceListening(false);
+      setVoiceStatus("SPEECH START FAILED");
+      setStatus("TYPE COMMANDS FOR NOW");
+      return;
+    }
     recognitionRef.current = recognition;
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -292,14 +414,12 @@ function App() {
       setIsVoiceListening(false);
       const errorType = event.error;
 
-      // Handle permission errors
       if (errorType === "not-allowed") {
         setVoiceStatus("MIC PERMISSION NEEDED");
         setStatus("ALLOW MICROPHONE");
         return;
       }
 
-      // Handle no microphone detected
       if (errorType === "audio-capture" || errorType === "no-microphone") {
         setVoiceStatus("NO MIC DETECTED");
         if (shouldListenRef.current) {
@@ -308,7 +428,6 @@ function App() {
         return;
       }
 
-      // Handle no speech detected - retry after longer delay
       if (errorType === "no-speech" || errorType === "timeout") {
         voiceErrorCountRef.current += 1;
         
@@ -322,20 +441,18 @@ function App() {
         return;
       }
 
-      // Handle network errors with exponential backoff
       if (errorType === "network" || errorType === "service-unavailable") {
         voiceErrorCountRef.current += 1;
         const delayMs = Math.min(1000 * voiceErrorCountRef.current, 5000);
         
-        setVoiceStatus("NETWORK ISSUE - RETRYING");
+        setVoiceStatus("SPEECH SERVICE RETRYING");
         if (shouldListenRef.current) {
           voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), delayMs);
         }
         return;
       }
 
-      // Handle other errors
-      setVoiceStatus("VOICE ERROR: RECOVERING");
+      setVoiceStatus(`VOICE ERROR: ${errorType}`);
       if (shouldListenRef.current) {
         voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 2000);
       }
@@ -355,10 +472,21 @@ function App() {
     setIsVoiceListening(true);
     setVoiceStatus("LISTENING");
     setStatus("VOICE ONLINE");
-    recognition.start();
+    try {
+      recognition.start();
+    } catch {
+      recognitionRef.current = null;
+      setIsVoiceListening(false);
+      setVoiceStatus("SPEECH START FAILED");
+      setStatus("TYPE COMMANDS FOR NOW");
+    }
   }
 
   async function handleVoiceCommand(transcript: string) {
+    if (isWakePhrase(transcript)) {
+      await window.iraDesktop?.showWindow();
+    }
+
     const command = cleanVoiceCommand(transcript);
     await runAssistantCommand(command);
   }
@@ -387,21 +515,6 @@ function App() {
 
     if (lowered.includes("can you see me") || lowered.includes("do you see me") || lowered.includes("see me")) {
       speak(faceVisibilityReply());
-      return;
-    }
-
-    if (["hello", "hi", "hey"].includes(lowered)) {
-      speak("Hello. IRA is online and listening.");
-      return;
-    }
-
-    if (lowered.includes("who are you")) {
-      speak("I am IRA, your Intelligent Responsive Assistant.");
-      return;
-    }
-
-    if (lowered.includes("what can you do") || lowered.includes("help")) {
-      speak("I can listen to your voice, answer you, check the camera, and send desktop commands to my backend.");
       return;
     }
 
@@ -661,7 +774,7 @@ function App() {
         }
       }
 
-      stopFaceRecognition();
+      stopFaceRecognition({ clearRetryTimer: false, resetRetryCount: false });
     } finally {
       cameraStartingRef.current = false;
     }

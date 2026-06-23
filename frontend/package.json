@@ -9,6 +9,8 @@
     "backend": "node ./scripts/backend-keepalive.js",
     "desktop": "node ./scripts/desktop-start.js",
     "electron": "electron .",
+    "startup:install": "node ./scripts/install-startup.js",
+    "startup:remove": "node -e \"const fs=require('fs');const os=require('os');const path=require('path');const file=path.join(process.env.APPDATA||path.join(os.homedir(),'AppData','Roaming'),'Microsoft','Windows','Start Menu','Programs','Startup','IRA.cmd');fs.rmSync(file,{force:true});console.log('IRA startup removed:',file);\"",
     "build": "vite build",
     "preview": "vite preview"
   },
