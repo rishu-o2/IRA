@@ -3,15 +3,37 @@ const http = require("http");
 const path = require("path");
 
 const PORT = 5173;
+const BACKEND_PORT = 8765;
 const HOST = "127.0.0.1";
 const DEV_URL = `http://${HOST}:${PORT}`;
+const BACKEND_URL = `http://${HOST}:${BACKEND_PORT}/health`;
 
 function checkServer(url) {
   return new Promise((resolve) => {
     http
-      .get(url, () => resolve(true))
+      .get(url, (response) => {
+        response.resume();
+        resolve(response.statusCode >= 200 && response.statusCode < 500);
+      })
       .on("error", () => resolve(false));
   });
+}
+
+function spawnBackend() {
+  const nodeCmd = process.execPath;
+  const child = spawn(nodeCmd, [path.join("scripts", "backend-keepalive.js")], {
+    stdio: "inherit",
+    windowsHide: true,
+    shell: false,
+  });
+
+  child.on("exit", (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`IRA backend keeper stopped with code ${code}.`);
+    }
+  });
+
+  return child;
 }
 
 function spawnVite() {
@@ -41,6 +63,30 @@ function spawnElectron() {
 }
 
 (async () => {
+  const backendUp = await checkServer(BACKEND_URL);
+  let backendProcess = null;
+
+  if (!backendUp) {
+    console.log("Starting IRA backend on port 8765...");
+    backendProcess = spawnBackend();
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < 12000) {
+      const ready = await checkServer(BACKEND_URL);
+      if (ready) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    if (!(await checkServer(BACKEND_URL))) {
+      console.error("IRA backend did not start on port 8765.");
+      process.exit(1);
+    }
+  } else {
+    console.log("Reusing existing IRA backend on port 8765.");
+  }
+
   const serverUp = await checkServer(DEV_URL);
   let viteProcess = null;
 
@@ -68,6 +114,9 @@ function spawnElectron() {
   spawnElectron();
 
   process.on("SIGINT", () => {
+    if (backendProcess) {
+      backendProcess.kill("SIGINT");
+    }
     if (viteProcess) {
       viteProcess.kill("SIGINT");
     }

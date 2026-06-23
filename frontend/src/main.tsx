@@ -15,9 +15,11 @@ type SpeechRecognition = EventTarget & {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
+  maxAlternatives: number;
   onend: (() => void) | null;
   onerror: ((event: { error: string }) => void) | null;
   onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onstart: (() => void) | null;
   start: () => void;
   stop: () => void;
 };
@@ -33,6 +35,14 @@ type SpeechRecognitionEvent = {
       };
     };
   };
+};
+
+type BackendFaceResult = {
+  ok?: boolean;
+  recognized?: boolean;
+  faces?: number;
+  message?: string;
+  error?: string;
 };
 
 declare global {
@@ -71,15 +81,19 @@ function cleanVoiceCommand(transcript: string) {
   return transcript
     .trim()
     .replace(/[.!?]+$/g, "")
-    .replace(/\b(hey|hello|hi)\s+ira\b/i, "ira")
+    .replace(/^\s*(hey|hello|hi)\s*,?\s+ira\b[:,]?\s*/i, "")
     .replace(/\bira\b[:,]?\s*/i, "")
     .trim();
 }
 
 function getBackendURL(): string {
-  // For now, use localhost since backend and frontend run on same machine
-  // The backend listens on 0.0.0.0:8765 so both localhost and network IP work
-  return "http://localhost:8765";
+  const host = window.location.hostname;
+
+  if (host && host !== "localhost") {
+    return `http://${host}:8765`;
+  }
+
+  return "http://127.0.0.1:8765";
 }
 
 function App() {
@@ -101,6 +115,7 @@ function App() {
   const shouldListenRef = useRef(true);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const faceDetectorRef = useRef<FaceDetector | null>(null);
+  const backendFaceDisabledRef = useRef(false);
   const cameraStartingRef = useRef(false);
   const voiceRestartTimerRef = useRef<number | null>(null);
   const voiceErrorCountRef = useRef(0);
@@ -362,9 +377,10 @@ function App() {
   }
 
   async function runAssistantCommand(command: string) {
-    const lowered = command.toLowerCase();
+    const normalizedCommand = cleanVoiceCommand(command);
+    const lowered = normalizedCommand.toLowerCase();
 
-    if (!command || lowered === "ira") {
+    if (!normalizedCommand || lowered === "ira") {
       speak("Yes. I am here.");
       return;
     }
@@ -374,7 +390,7 @@ function App() {
       return;
     }
 
-    if (lowered.includes("hello") || lowered.includes("hi")) {
+    if (["hello", "hi", "hey"].includes(lowered)) {
       speak("Hello. IRA is online and listening.");
       return;
     }
@@ -392,10 +408,11 @@ function App() {
     try {
       setStatus("EXECUTING COMMAND");
       setVoiceStatus("PROCESSING");
-      const response = await sendCommandToBackend(command);
+      const response = await sendCommandToBackend(normalizedCommand);
       speak(response);
-    } catch {
-      speak("My backend command bridge is not connected. Start the backend server and I can do more work for you.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Backend not connected";
+      speak(`My backend command bridge is not connected. ${message}`);
     }
   }
 
@@ -421,21 +438,93 @@ function App() {
     return "I am still starting the camera scan.";
   }
 
-  async function sendCommandToBackend(command: string) {
-    const response = await fetch(`${backendURLRef.current}/command`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ message: command })
-    });
+  async function sendJsonToBackend<TPayload extends object, TResult>(
+    endpoint: string,
+    payload: TPayload,
+    timeoutMs = 2200
+  ) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    const requestURL = `${backendURLRef.current}${endpoint}`;
 
-    if (!response.ok) {
-      throw new Error("Backend command failed");
+    try {
+      const response = await fetch(requestURL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        const details = await response.text().catch(() => "");
+        throw new Error(`${endpoint} returned ${response.status}${details ? `: ${details}` : ""}`);
+      }
+
+      return (await response.json()) as TResult;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "failed";
+      throw new Error(`Unified backend ${backendURLRef.current}${endpoint} failed: ${reason}`);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function sendCommandToBackend(command: string) {
+    const payload = await sendJsonToBackend<{ message: string }, { text?: string }>("/command", { message: command });
+    return payload.text ?? "Command completed.";
+  }
+
+  function captureFaceFrame() {
+    const video = videoRef.current;
+
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      return null;
     }
 
-    const payload = (await response.json()) as { text?: string };
-    return payload.text ?? "Command completed.";
+    const canvas = document.createElement("canvas");
+    const maxWidth = 480;
+    const scale = Math.min(1, maxWidth / video.videoWidth);
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return null;
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.72);
+  }
+
+  async function scanFaceWithBackend() {
+    if (backendFaceDisabledRef.current) {
+      return null;
+    }
+
+    const image = captureFaceFrame();
+    if (!image) {
+      return null;
+    }
+
+    try {
+      const result = await sendJsonToBackend<{ image: string }, BackendFaceResult>("/face", { image }, 6500);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+
+      if (
+        message.includes("Google API key is not configured") ||
+        message.includes("Cloud Vision API is disabled") ||
+        message.includes("billing is disabled") ||
+        message.includes("permission denied")
+      ) {
+        backendFaceDisabledRef.current = true;
+      }
+
+      return null;
+    }
   }
 
   async function startFaceRecognition() {
@@ -486,7 +575,7 @@ function App() {
       cameraRetryCountRef.current = 0;
       faceDetectorRef.current = window.FaceDetector ? new window.FaceDetector({ fastMode: true, maxDetectedFaces: 1 }) : null;
       setIsFaceScanning(true);
-      setFaceStatus(faceDetectorRef.current ? "LOCAL FACE SCAN" : "CAMERA ACTIVE");
+      setFaceStatus("BACKEND FACE SCAN");
       setStatus("FACE RECOGNITION ACTIVE");
       console.log("[IRA] Camera stream started successfully.");
 
@@ -496,6 +585,23 @@ function App() {
         }
 
         try {
+          const backendFace = await scanFaceWithBackend();
+
+          if (backendFace?.ok) {
+            if (backendFace.recognized || (backendFace.faces ?? 0) > 0) {
+              setFaceStatus(backendFace.message || "USER RECOGNIZED");
+              setStatus("ACCESS CONFIRMED");
+              if (!hasWelcomedFaceRef.current) {
+                hasWelcomedFaceRef.current = true;
+                speak("I can see you. Face recognized.");
+              }
+              return;
+            }
+
+            setFaceStatus(backendFace.message || "SEARCHING FACE");
+            return;
+          }
+
           if (!faceDetectorRef.current) {
             setFaceStatus("CAMERA ACTIVE");
             return;

@@ -6,6 +6,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
+    "backend": "node ./scripts/backend-keepalive.js",
     "desktop": "node ./scripts/desktop-start.js",
     "electron": "electron .",
     "build": "vite build",
