@@ -8,10 +8,7 @@ from urllib.request import Request, urlopen
 from .config import gemini_api_key, gemini_model, openai_api_key, openai_model
 
 OPENAI_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
-GEMINI_CHAT_ENDPOINTS = [
-    "https://gemini.googleapis.com/v1/models",
-    "https://gemini.googleapis.com/v1beta2/models",
-]
+GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 SYSTEM_PROMPT = (
     "You are IRA, the user's intelligent responsive desktop assistant. "
@@ -41,42 +38,32 @@ class OpenAIConversation:
         if gemini_key:
             model = gemini_model()
             payload = {
-                "messages": [
-                    {"author": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+                "contents": [
+                    {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
                     *[
-                        {"author": msg["role"], "content": [{"type": "text", "text": msg["content"]}]}
+                        {"role": msg["role"], "parts": [{"text": msg["content"]}]}
                         for msg in self.history
                     ],
-                    {"author": "user", "content": [{"type": "text", "text": clean_message}]},
+                    {"role": "user", "parts": [{"text": clean_message}]},
                 ],
-                "temperature": 0.7,
+                "generationConfig": {
+                    "temperature": 0.7,
+                },
             }
             headers = {
-                "Authorization": f"Bearer {gemini_key}",
+                "x-goog-api-key": gemini_key,
                 "Content-Type": "application/json",
             }
-            request_errors: list[str] = []
-            response_body = None
-            for base_url in GEMINI_CHAT_ENDPOINTS:
-                endpoint = f"{base_url}/{model}:generateMessage"
-                request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-                try:
-                    with urlopen(request, timeout=25) as response:
-                        response_body = json.loads(response.read().decode("utf-8"))
-                    break
-                except HTTPError as exc:
-                    request_errors.append(
-                        f"{endpoint} returned {exc.code}: {exc.read().decode('utf-8', errors='replace')}"
-                    )
-                    if exc.code != 404:
-                        raise ConversationError(_api_error_message(exc, True)) from exc
-                except (OSError, URLError, json.JSONDecodeError) as exc:
-                    raise ConversationError("Conversation API request failed.") from exc
-
-            if response_body is None:
-                raise ConversationError(
-                    "Gemini endpoint failed. Tried: " + "; ".join(request_errors)
-                )
+            endpoint = f"{GEMINI_CHAT_ENDPOINT}/{model}:generateContent"
+            request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+            try:
+                with urlopen(request, timeout=25) as response:
+                    response_body = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                raise ConversationError(_api_error_message(exc, True)) from exc
+            except (OSError, URLError, json.JSONDecodeError) as exc:
+                raise ConversationError("Conversation API request failed.") from exc
+            body = response_body
         else:
             api_key = openai_key
             if not api_key:
@@ -133,11 +120,13 @@ def _parse_chat_reply(body: dict[str, Any], is_gemini: bool) -> str:
 
         first = candidates[0]
         content = first.get("content") if isinstance(first, dict) else None
-        if isinstance(content, list) and content:
-            first_piece = content[0]
-            text = first_piece.get("text") if isinstance(first_piece, dict) else None
-            if isinstance(text, str) and text.strip():
-                return text.strip()
+        if isinstance(content, dict):
+            parts = content.get("parts") if isinstance(content, dict) else None
+            if isinstance(parts, list) and parts:
+                first_part = parts[0]
+                text = first_part.get("text") if isinstance(first_part, dict) else None
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
         raise ConversationError("Conversation API returned an empty reply.")
 
     choices = body.get("choices")
