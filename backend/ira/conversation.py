@@ -5,9 +5,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .config import gemini_api_key, gemini_model, openai_api_key, openai_model
+from .config import gemini_api_key, gemini_model
 
-OPENAI_CHAT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
 
 SYSTEM_PROMPT = (
@@ -32,72 +31,43 @@ class OpenAIConversation:
         if not clean_message:
             raise ConversationError("Tell me what you want to talk about.")
 
-        openai_key = openai_api_key()
         gemini_key = gemini_api_key()
-
-        if gemini_key:
-            model = gemini_model()
-            payload = {
-                "contents": [
-                    {"role": "user", "parts": [{"text": SYSTEM_PROMPT}]},
-                    *[
-                        {"role": msg["role"], "parts": [{"text": msg["content"]}]}
-                        for msg in self.history
-                    ],
-                    {"role": "user", "parts": [{"text": clean_message}]},
-                ],
-                "generationConfig": {
-                    "temperature": 0.7,
-                },
-            }
-            headers = {
-                "x-goog-api-key": gemini_key,
-                "Content-Type": "application/json",
-            }
-            endpoint = f"{GEMINI_CHAT_ENDPOINT}/{model}:generateContent"
-            request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-            try:
-                with urlopen(request, timeout=25) as response:
-                    response_body = json.loads(response.read().decode("utf-8"))
-            except HTTPError as exc:
-                raise ConversationError(_api_error_message(exc, True)) from exc
-            except (OSError, URLError, json.JSONDecodeError) as exc:
-                raise ConversationError("Conversation API request failed.") from exc
-            body = response_body
-        else:
-            api_key = openai_key
-            if not api_key:
-                raise ConversationError("Conversation API is not configured. Add OPENAI_API_KEY or GEMINI_API_KEY to backend/.env.")
-
-            payload = {
-                "model": openai_model(),
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    *self.history,
-                    {"role": "user", "content": clean_message},
-                ],
-                "temperature": 0.7,
-            }
-            request = Request(
-                OPENAI_CHAT_ENDPOINT,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-
         if not gemini_key:
-            try:
-                with urlopen(request, timeout=25) as response:
-                    body = json.loads(response.read().decode("utf-8"))
-            except HTTPError as exc:
-                raise ConversationError(_api_error_message(exc, False)) from exc
-            except (OSError, URLError, json.JSONDecodeError) as exc:
-                raise ConversationError("Conversation API request failed.") from exc
+            raise ConversationError("Conversation API is not configured. Add GEMINI_API_KEY to backend/.env.")
 
-        reply_text = _parse_chat_reply(body, gemini_key is not None)
+        model = gemini_model()
+        # Convert history roles: OpenAI uses "assistant", Gemini uses "model"
+        history_contents = [
+            {"role": "model" if msg["role"] == "assistant" else "user", "parts": [{"text": msg["content"]}]}
+            for msg in self.history
+        ]
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": SYSTEM_PROMPT}]
+            },
+            "contents": [
+                *history_contents,
+                {"role": "user", "parts": [{"text": clean_message}]},
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+            },
+        }
+        headers = {
+            "x-goog-api-key": gemini_key,
+            "Content-Type": "application/json",
+        }
+        endpoint = f"{GEMINI_CHAT_ENDPOINT}/{model}:generateContent"
+        request = Request(endpoint, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=25) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise ConversationError(_api_error_message(exc, True)) from exc
+        except (OSError, URLError, json.JSONDecodeError) as exc:
+            raise ConversationError("Conversation API request failed.") from exc
+
+        reply_text = _parse_chat_reply(body, True)
         self._remember(clean_message, reply_text)
         return reply_text
 
@@ -113,31 +83,19 @@ class OpenAIConversation:
 
 
 def _parse_chat_reply(body: dict[str, Any], is_gemini: bool) -> str:
-    if is_gemini:
-        candidates = body.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            raise ConversationError("Conversation API returned no reply.")
-
-        first = candidates[0]
-        content = first.get("content") if isinstance(first, dict) else None
-        if isinstance(content, dict):
-            parts = content.get("parts") if isinstance(content, dict) else None
-            if isinstance(parts, list) and parts:
-                first_part = parts[0]
-                text = first_part.get("text") if isinstance(first_part, dict) else None
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
-        raise ConversationError("Conversation API returned an empty reply.")
-
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices:
+    candidates = body.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
         raise ConversationError("Conversation API returned no reply.")
 
-    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-    content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-
+    first = candidates[0]
+    content = first.get("content") if isinstance(first, dict) else None
+    if isinstance(content, dict):
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if isinstance(parts, list) and parts:
+            first_part = parts[0]
+            text = first_part.get("text") if isinstance(first_part, dict) else None
+            if isinstance(text, str) and text.strip():
+                return text.strip()
     raise ConversationError("Conversation API returned an empty reply.")
 
 
@@ -151,9 +109,7 @@ def _api_error_message(exc: HTTPError, is_gemini: bool) -> str:
     message = str(error.get("message", "")).strip()
 
     if exc.code in {401, 403}:
-        if is_gemini:
-            return "Conversation API rejected the Gemini key. Check GEMINI_API_KEY in backend/.env."
-        return "Conversation API rejected the OpenAI key. Check OPENAI_API_KEY in backend/.env."
+        return "Conversation API rejected the Gemini key. Check GEMINI_API_KEY in backend/.env."
 
     if message:
         return f"Conversation API error: {message}"
