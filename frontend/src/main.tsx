@@ -96,12 +96,14 @@ function cleanVoiceCommand(transcript: string) {
     .trim()
     .replace(/[.!?]+$/g, "")
     .replace(/^\s*(hey|hello|hi)\s*,?\s+ira\b[:,]?\s*/i, "")
-    .replace(/\bira\b[:,]?\s*/i, "")
+    .replace(/^\s*(open|wake|activate)\s+(?:my\s+)?(ira|laptop|computer)\b[:,]?\s*/i, "")
+    .replace(/^\s*ira\b[:,]?\s*/i, "")
+    .replace(/^\s*(please|can you|could you|would you)\s+/i, "")
     .trim();
 }
 
 function isWakePhrase(transcript: string) {
-  return /^\s*(hey|hello|hi)\s*,?\s+ira\b/i.test(transcript.trim());
+  return /^\s*(?:(hey|hello|hi)\s*,?\s+ira|open\s+(?:my\s+)?(?:ira|laptop|computer)|wake\s+(?:my\s+)?(?:ira|laptop|computer)|activate\s+(?:my\s+)?(?:ira|laptop|computer))\b/i.test(transcript.trim());
 }
 
 function getBackendURL(): string {
@@ -123,6 +125,8 @@ function App() {
   const [isFaceScanning, setIsFaceScanning] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [gestureMode, setGestureMode] = useState(false);
+  const [gestureStatus, setGestureStatus] = useState("GESTURE INACTIVE");
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const autoStartedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -483,11 +487,21 @@ function App() {
   }
 
   async function handleVoiceCommand(transcript: string) {
-    if (isWakePhrase(transcript)) {
+    const wake = isWakePhrase(transcript);
+    if (wake) {
       await window.iraDesktop?.showWindow();
     }
 
     const command = cleanVoiceCommand(transcript);
+    if (!command) {
+      if (wake) {
+        speak("Hello sir. I am awake and ready.");
+        return;
+      }
+      speak("Yes. I am here.");
+      return;
+    }
+
     await runAssistantCommand(command);
   }
 
@@ -508,6 +522,21 @@ function App() {
     const normalizedCommand = cleanVoiceCommand(command);
     const lowered = normalizedCommand.toLowerCase();
 
+    if (lowered.includes("gesture mode") || lowered.includes("gesture control") || lowered.includes("hand gesture") || lowered.includes("hand gestures")) {
+      const disable = lowered.includes("stop") || lowered.includes("turn off") || lowered.includes("disable") || lowered.includes("off");
+      if (disable) {
+        setGestureMode(false);
+        setGestureStatus("GESTURE INACTIVE");
+        speak("Gesture mode disabled. I will stop moving with hand motion.");
+        return;
+      }
+
+      setGestureMode(true);
+      setGestureStatus("GESTURE ACTIVE");
+      speak("Gesture mode enabled. Move your hand in front of the camera to guide me like Dr. Strange.");
+      return;
+    }
+
     if (!normalizedCommand || lowered === "ira") {
       speak("Yes. I am here.");
       return;
@@ -524,8 +553,8 @@ function App() {
       const response = await sendCommandToBackend(normalizedCommand);
       speak(response);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Backend not connected";
-      speak(`My backend command bridge is not connected. ${message}`);
+      const message = error instanceof Error ? error.message : "Backend not connected.";
+      speak(`Backend request failed. ${message}`);
     }
   }
 
@@ -791,12 +820,13 @@ function App() {
           isFaceScanning ? "is-face-scanning" : ""
         }`}
       >
-        <IraAvatar3D />
+        <IraAvatar3D gestureEnabled={gestureMode} gestureSource={videoRef.current} />
         <video ref={videoRef} className="face-video" playsInline muted aria-hidden="true" />
         <div className="voice-core" aria-live="polite" aria-label="IRA status">
           <span className="voice-status">{status}</span>
           <span className="face-status">{voiceStatus}</span>
           <span className="face-status">{faceStatus}</span>
+          <span className="face-status">{gestureStatus}</span>
           {lastHeard ? <span className="voice-transcript">{lastHeard}</span> : null}
         </div>
       </section>

@@ -3,7 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from dataclasses import dataclass
 
-from .actions import ActionError, open_app, open_known_folder, open_path, open_website, play_youtube_search, search_web
+from .actions import (
+    ActionError,
+    lock_screen,
+    mute_system,
+    open_app,
+    open_known_folder,
+    open_path,
+    open_website,
+    play_youtube_search,
+    search_web,
+    shutdown_system,
+    sleep_system,
+)
 from .conversation import ConversationError, OpenAIConversation
 
 
@@ -31,8 +43,41 @@ class IRAAssistant:
             if lowered in {"time", "what time is it", "tell me the time", "current time"}:
                 return AssistantResponse(f"It is {datetime.now().strftime('%I:%M %p').lstrip('0')}.")
 
-            if lowered in {"date", "what date is it", "what is today's date", "today's date"}:
-                return AssistantResponse(f"Today is {datetime.now().strftime('%A, %B %d, %Y')}.")
+            if lowered in {
+                "date",
+                "what date is it",
+                "what is today's date",
+                "today's date",
+                "open ira",
+                "wake ira",
+                "wake up ira",
+                "activate ira",
+                "open my laptop",
+                "wake my laptop",
+                "wake laptop",
+                "open laptop",
+                "activate laptop",
+                "activate my laptop",
+            }:
+                return AssistantResponse("Hello sir. I am awake and ready.")
+
+            if lowered.startswith(("lock screen", "lock my screen", "lock computer", "lock pc", "lock the screen")):
+                return AssistantResponse(lock_screen())
+
+            if lowered.startswith(("shut down", "shutdown", "turn off", "power off", "shut down the computer", "shutdown the computer", "turn off the computer", "power off the computer")):
+                return AssistantResponse(shutdown_system())
+
+            if lowered.startswith(("sleep", "go to sleep", "put the computer to sleep", "hibernate", "go to hibernate", "enter sleep mode", "enter hibernate mode")):
+                return AssistantResponse(sleep_system())
+
+            if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
+                return AssistantResponse(mute_system())
+
+            if lowered.startswith(("call ", "make a call to ")):
+                try:
+                    return AssistantResponse(open_app("skype"))
+                except ActionError as exc:
+                    return AssistantResponse(str(exc), handled=False)
 
             if lowered.startswith(("launch ", "start ")):
                 app_name = command.split(" ", 1)[1].strip()

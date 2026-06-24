@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import shutil
+import subprocess
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -47,6 +49,63 @@ def open_known_folder(folder_name: str) -> str:
     return open_path(str(path))
 
 
+def lock_screen() -> str:
+    if os.name != "nt":
+        raise ActionError("Lock screen is only supported on Windows.")
+
+    try:
+        locked = bool(ctypes.windll.user32.LockWorkStation())
+        if not locked:
+            raise OSError("Could not lock the screen.")
+    except Exception as exc:
+        raise ActionError("I could not lock the screen.") from exc
+
+    return "Locking the screen."
+
+
+def shutdown_system() -> str:
+    if os.name != "nt":
+        raise ActionError("Shutdown is only supported on Windows.")
+
+    try:
+        subprocess.run(["shutdown", "/s", "/t", "0"], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise ActionError("I could not shut down the computer.") from exc
+
+    return "Shutting down the computer."
+
+
+def sleep_system() -> str:
+    if os.name != "nt":
+        raise ActionError("Sleep is only supported on Windows.")
+
+    try:
+        result = ctypes.windll.powrprof.SetSuspendState(False, True, False)
+        if result is False:
+            raise OSError("Sleep request rejected.")
+    except Exception as exc:
+        raise ActionError("I could not put the computer to sleep.") from exc
+
+    return "Putting the computer to sleep."
+
+
+def mute_system() -> str:
+    if os.name != "nt":
+        raise ActionError("Mute is only supported on Windows.")
+
+    try:
+        user32 = ctypes.windll.user32
+        VK_VOLUME_MUTE = 0xAD
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        user32.keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_EXTENDEDKEY, 0)
+        user32.keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    except Exception as exc:
+        raise ActionError("I could not mute the volume.") from exc
+
+    return "Muting the volume."
+
+
 def open_app(app_name: str) -> str:
     normalized = app_name.strip().lower()
     app_commands = {
@@ -66,6 +125,8 @@ def open_app(app_name: str) -> str:
         "command prompt": "cmd.exe",
         "cmd": "cmd.exe",
         "powershell": "powershell.exe",
+        "skype": "skype.exe",
+        "teams": "Teams.exe",
         "visual studio code": "Code.exe",
         "vs code": "Code.exe",
         "vscode": "Code.exe",

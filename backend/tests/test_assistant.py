@@ -31,6 +31,24 @@ def test_unknown_command_is_not_handled() -> None:
     assert "cannot complete" in response.text.lower()
 
 
+def test_open_ira_greeting() -> None:
+    assistant = IRAAssistant()
+
+    response = assistant.handle("open IRA")
+
+    assert response.handled is True
+    assert "awake" in response.text.lower()
+
+
+def test_wake_laptop_greeting() -> None:
+    assistant = IRAAssistant()
+
+    response = assistant.handle("wake my laptop")
+
+    assert response.handled is True
+    assert "awake" in response.text.lower()
+
+
 def test_general_conversation_uses_api() -> None:
     conversation = FakeConversation("I am doing well.")
     assistant = IRAAssistant(conversation=conversation)

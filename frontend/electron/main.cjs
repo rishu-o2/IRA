@@ -85,6 +85,42 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function installWindowsStartupShortcut() {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  try {
+    const startupDir = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+    const frontendDir = path.resolve(__dirname, "..");
+    const nodePath = path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "npm.cmd");
+    const startupFile = path.join(startupDir, "IRA.cmd");
+    let command = "";
+
+    if (app.isPackaged) {
+      const exePath = process.execPath;
+      command = [
+        "@echo off",
+        `start "" /min "${exePath}"`,
+        ""
+      ].join("\r\n");
+    } else {
+      command = [
+        "@echo off",
+        `cd /d "${frontendDir}"`,
+        `start "" /min "${nodePath}" run desktop -- --start-minimized`,
+        ""
+      ].join("\r\n");
+    }
+
+    fs.mkdirSync(startupDir, { recursive: true });
+    fs.writeFileSync(startupFile, command, "utf-8");
+    console.log(`[IRA] Installed startup shortcut: ${startupFile}`);
+  } catch (error) {
+    console.warn("[IRA] Failed to install startup shortcut:", error);
+  }
+}
+
 async function startBackend() {
   if (await checkBackend()) {
     console.log("[IRA] Reusing existing backend on port 8765.");
@@ -251,6 +287,7 @@ app.whenReady().then(async () => {
     showMainWindow();
   });
   ipcMain.handle("ira:native-speech-supported", () => process.platform === "win32");
+  installWindowsStartupShortcut();
   app.setLoginItemSettings({
     openAtLogin: true,
     args: ["--start-minimized"]

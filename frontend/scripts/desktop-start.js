@@ -40,7 +40,7 @@ function spawnVite() {
   const viteCmd = process.platform === "win32" ? path.join("node_modules", ".bin", "vite.cmd") : path.join("node_modules", ".bin", "vite");
   const child = spawn(viteCmd, ["--host", "0.0.0.0", "--port", String(PORT)], {
     stdio: "inherit",
-    shell: false,
+    shell: process.platform === "win32",
   });
   child.on("exit", (code) => {
     if (code !== 0) {
