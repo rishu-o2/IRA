@@ -52,7 +52,12 @@ function makeIraTexture() {
   return texture;
 }
 
-export function IraAvatar3D() {
+type IraAvatar3DProps = {
+  gestureEnabled?: boolean;
+  gestureSource?: HTMLVideoElement | null;
+};
+
+export function IraAvatar3D({ gestureEnabled = false, gestureSource = null }: IraAvatar3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -154,8 +159,9 @@ export function IraAvatar3D() {
 
     const animate = () => {
       const elapsed = clock.getElapsedTime();
-      hologram.rotation.z = Math.sin(elapsed * 0.16) * 0.035;
-      hologram.scale.setScalar(1 + Math.sin(elapsed * 1.3) * 0.018);
+      const gesturePulse = gestureEnabled && gestureSource?.readyState ? 0.035 : 0;
+      hologram.rotation.z = Math.sin(elapsed * 0.16) * 0.035 + Math.sin(elapsed * 1.8) * gesturePulse;
+      hologram.scale.setScalar(1 + Math.sin(elapsed * 1.3) * (0.018 + gesturePulse * 0.35));
       rings.rotation.z = elapsed * 0.13;
       orbitLines.rotation.z = -elapsed * 0.1;
       particles.rotation.z = -elapsed * 0.04;
@@ -188,7 +194,7 @@ export function IraAvatar3D() {
         }
       });
     };
-  }, []);
+  }, [gestureEnabled, gestureSource]);
 
   return <div ref={mountRef} className="avatar-3d" aria-label="IRA hologram circle" />;
 }

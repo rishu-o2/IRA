@@ -63,6 +63,7 @@ declare global {
       showWindow: () => Promise<void>;
     };
     SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitAudioContext?: typeof AudioContext;
     webkitSpeechRecognition?: SpeechRecognitionConstructor;
   }
 }
@@ -657,10 +658,8 @@ function App() {
       const message = error instanceof Error ? error.message : "";
 
       if (
-        message.includes("Google API key is not configured") ||
-        message.includes("Cloud Vision API is disabled") ||
-        message.includes("billing is disabled") ||
-        message.includes("permission denied")
+        message.includes("Local face detector is not installed") ||
+        message.includes("Local face detector model could not be loaded")
       ) {
         backendFaceDisabledRef.current = true;
       }

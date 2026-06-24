@@ -27,12 +27,7 @@ def load_env_file() -> None:
 
 def google_api_key() -> str | None:
     load_env_file()
-    return os.environ.get("GOOGLE_API_KEY")
-
-
-def openai_api_key() -> str | None:
-    load_env_file()
-    return os.environ.get("OPENAI_API_KEY")
+    return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
 
 def gemini_api_key() -> str | None:
@@ -40,11 +35,6 @@ def gemini_api_key() -> str | None:
     return os.environ.get("GEMINI_API_KEY")
 
 
-def openai_model() -> str:
-    load_env_file()
-    return os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-
 def gemini_model() -> str:
     load_env_file()
-    return os.environ.get("GEMINI_MODEL", "gemini-1.5-chat")
+    return os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")

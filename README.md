@@ -126,9 +126,18 @@ For the frontend command box and quick action buttons to control the computer, k
 
 ### AI & Language Models
 
-* OpenAI API
+* Google AI Studio / Gemini API
 * Ollama
 * Local LLM integration
+
+### Google AI Studio Setup
+
+Create a Gemini API key in Google AI Studio, then add it to `backend/.env`:
+
+```text
+GEMINI_API_KEY=your_google_ai_studio_api_key_here
+GEMINI_MODEL=gemini-3.1-flash-lite
+```
 
 ### Automation
 
@@ -138,7 +147,7 @@ For the frontend command box and quick action buttons to control the computer, k
 
 ### Vision System
 
-* OpenCV
+* Local OpenCV face detection
 * OCR
 * Screen analysis
 

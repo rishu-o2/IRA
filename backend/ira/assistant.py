@@ -16,7 +16,7 @@ from .actions import (
     shutdown_system,
     sleep_system,
 )
-from .conversation import ConversationError, OpenAIConversation
+from .conversation import ConversationError, GeminiConversation
 
 
 @dataclass(frozen=True)
@@ -26,8 +26,8 @@ class AssistantResponse:
 
 
 class IRAAssistant:
-    def __init__(self, conversation: OpenAIConversation | None = None) -> None:
-        self.conversation = conversation or OpenAIConversation()
+    def __init__(self, conversation: GeminiConversation | None = None) -> None:
+        self.conversation = conversation or GeminiConversation()
 
     def handle(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
