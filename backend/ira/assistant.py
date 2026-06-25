@@ -167,9 +167,68 @@ class IRAAssistant:
             )
 
         try:
-            return AssistantResponse(self.conversation.reply(command))
+            reply_text = self.conversation.reply(command)
+            applied_mods = self._apply_self_modifications(reply_text)
+            if applied_mods:
+                reply_text += f"\n\n[System note: Applied changes to {', '.join(applied_mods)}]"
+            return AssistantResponse(reply_text)
         except ConversationError as exc:
             return AssistantResponse(str(exc), handled=False)
+
+    def _apply_self_modifications(self, reply_text: str) -> list[str]:
+        import re
+        from pathlib import Path
+
+        project_root = Path(__file__).resolve().parents[2]
+
+        def safe_resolve_path(rel_path: str) -> Path:
+            target = (project_root / rel_path.strip()).resolve()
+            if project_root not in target.parents and target != project_root:
+                raise ValueError(f"Path traversal detected: {rel_path} resolves outside project root.")
+            return target
+
+        applied_files: list[str] = []
+
+        # Parse <write_file> tags
+        write_matches = re.finditer(r'<write_file\s+path="([^"]+)"\s*>(.*?)</write_file>', reply_text, re.DOTALL)
+        for match in write_matches:
+            rel_path, content = match.group(1), match.group(2)
+            try:
+                target_path = safe_resolve_path(rel_path)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_text(content, encoding="utf-8")
+                applied_files.append(rel_path)
+            except Exception as e:
+                print(f"Error executing self-modification <write_file path=\"{rel_path}\">: {e}")
+
+        # Parse <patch_file> tags
+        patch_matches = re.finditer(r'<patch_file\s+path="([^"]+)"\s*>(.*?)</patch_file>', reply_text, re.DOTALL)
+        for match in patch_matches:
+            rel_path, patch_content = match.group(1), match.group(2)
+            try:
+                target_path = safe_resolve_path(rel_path)
+                if not target_path.exists():
+                    raise FileNotFoundError(f"Cannot patch non-existent file: {target_path}")
+
+                file_content = target_path.read_text(encoding="utf-8")
+                blocks = re.findall(r'<<<<(.*?)====(.*?)>>>>', patch_content, re.DOTALL)
+                modified = False
+                for search, replace in blocks:
+                    search_clean = search.strip("\r\n")
+                    replace_clean = replace.strip("\r\n")
+                    if search_clean in file_content:
+                        file_content = file_content.replace(search_clean, replace_clean, 1)
+                        modified = True
+                    else:
+                        print(f"Patch search block not found in {rel_path}:\n{search_clean}")
+                
+                if modified:
+                    target_path.write_text(file_content, encoding="utf-8")
+                    applied_files.append(rel_path)
+            except Exception as e:
+                print(f"Error executing self-modification <patch_file path=\"{rel_path}\">: {e}")
+
+        return applied_files
 
     def _normalize_command(self, message: str) -> str:
         command = " ".join(message.strip().split())

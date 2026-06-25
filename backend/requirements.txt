@@ -1,2 +1,5 @@
 pytest==8.3.4
 opencv-python-headless==4.10.0.84
+speechrecognition>=3.10.0
+sounddevice>=0.4.6
+pyttsx3>=2.90
