@@ -22,6 +22,14 @@ class IRARequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "name": "IRA", "features": ["command", "conversation", "face"]})
             return
 
+        if self.path == "/virtual_world":
+            self._send_json({
+                "ok": True,
+                "virtual_world_state": self.assistant.virtual_world.get_status(),
+                "modifications": self.assistant.recent_modifications,
+            })
+            return
+
         self._send_json({"ok": False, "error": "Not found"}, status=404)
 
     def do_POST(self) -> None:
@@ -49,6 +57,8 @@ class IRARequestHandler(BaseHTTPRequestHandler):
                 "ok": response.handled,
                 "text": response.text,
                 "handled": response.handled,
+                "virtual_world_state": self.assistant.virtual_world.get_status(),
+                "modifications": self.assistant.recent_modifications,
             }
         )
 

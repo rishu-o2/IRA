@@ -15,6 +15,11 @@ from .actions import (
     search_web,
     shutdown_system,
     sleep_system,
+    volume_up,
+    volume_down,
+    set_brightness,
+    get_battery_status,
+    get_system_stats,
 )
 from .conversation import ConversationError, GeminiConversation
 
@@ -28,10 +33,15 @@ class AssistantResponse:
 class IRAAssistant:
     def __init__(self, conversation: GeminiConversation | None = None) -> None:
         self.conversation = conversation or GeminiConversation()
+        from .virtual_world import VirtualWorld
+        self.virtual_world = VirtualWorld()
+        self.recent_modifications = []
+        self.modification_history = []
 
     def handle(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
         lowered = command.lower()
+        self.recent_modifications = []
 
         if not command:
             return AssistantResponse("I'm here. Tell me what you want to do.", handled=False)
@@ -39,6 +49,24 @@ class IRAAssistant:
         try:
             if lowered in {"commands"}:
                 return AssistantResponse(self._help_text())
+
+            if lowered in {
+                "what did you update",
+                "what did you change",
+                "recent modifications",
+                "recent updates",
+                "show modifications",
+                "show updates",
+                "what changes did you make",
+                "what have you updated",
+            }:
+                if not self.modification_history:
+                    return AssistantResponse("I have not made any modifications to my program files in this session.")
+                
+                lines = ["In this session, I have modified the following files:"]
+                for idx, mod in enumerate(self.modification_history, 1):
+                    lines.append(f"{idx}. `{mod['path']}` ({mod['type']} modification)")
+                return AssistantResponse("\n".join(lines))
 
             if lowered in {"time", "what time is it", "tell me the time", "current time"}:
                 return AssistantResponse(f"It is {datetime.now().strftime('%I:%M %p').lstrip('0')}.")
@@ -52,6 +80,7 @@ class IRAAssistant:
                 "wake ira",
                 "wake up ira",
                 "activate ira",
+                "ira",
                 "open my laptop",
                 "wake my laptop",
                 "wake laptop",
@@ -72,6 +101,50 @@ class IRAAssistant:
 
             if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
                 return AssistantResponse(mute_system())
+
+            if lowered.startswith(("unmute", "unmute the volume", "turn volume on", "turn on volume")):
+                return AssistantResponse(mute_system())
+
+            if lowered.startswith(("volume up", "increase volume", "louder", "make it louder")):
+                return AssistantResponse(volume_up())
+
+            if lowered.startswith(("volume down", "decrease volume", "quieter", "make it quieter")):
+                return AssistantResponse(volume_down())
+
+            if "brightness" in lowered:
+                import re
+                match = re.search(r"(\d+)", lowered)
+                if match:
+                    level = int(match.group(1))
+                    return AssistantResponse(set_brightness(level))
+                if "up" in lowered or "increase" in lowered or "brighter" in lowered:
+                    return AssistantResponse(set_brightness(80))
+                if "down" in lowered or "decrease" in lowered or "dimmer" in lowered:
+                    return AssistantResponse(set_brightness(30))
+
+            if lowered.startswith(("battery", "check battery", "battery status", "how is the battery")):
+                return AssistantResponse(get_battery_status())
+
+            if lowered.startswith(("system stats", "check system stats", "resource usage", "cpu usage", "performance stats")):
+                return AssistantResponse(get_system_stats())
+
+            if lowered.startswith("change mood to ") or lowered.startswith("change your mood to "):
+                mood = command.split("to ", 1)[1].strip()
+                return AssistantResponse(self.virtual_world.update_state("mood", mood))
+
+            if lowered.startswith("add knowledge ") or lowered.startswith("add to knowledge base "):
+                kb_item = command.split("knowledge ", 1)[1].strip()
+                if kb_item not in self.virtual_world.state["knowledge_base"]:
+                    self.virtual_world.state["knowledge_base"].append(kb_item)
+                return AssistantResponse(f"Added {kb_item} to knowledge base.")
+
+            if lowered in {"virtual world status", "virtual status", "show virtual world"}:
+                status_dict = self.virtual_world.get_status()
+                return AssistantResponse(
+                    f"Virtual World Status - Mood: {status_dict['mood']}, "
+                    f"Knowledge Base: {', '.join(status_dict['knowledge_base'])}, "
+                    f"Last Interaction: {status_dict['last_interaction']}"
+                )
 
             if lowered.startswith(("call ", "make a call to ")):
                 try:
@@ -198,6 +271,15 @@ class IRAAssistant:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 target_path.write_text(content, encoding="utf-8")
                 applied_files.append(rel_path)
+                self.recent_modifications.append({
+                    "path": rel_path,
+                    "type": "write",
+                    "content": content
+                })
+                self.modification_history.append({
+                    "path": rel_path,
+                    "type": "write"
+                })
             except Exception as e:
                 print(f"Error executing self-modification <write_file path=\"{rel_path}\">: {e}")
 
@@ -213,45 +295,75 @@ class IRAAssistant:
                 file_content = target_path.read_text(encoding="utf-8")
                 blocks = re.findall(r'<<<<(.*?)====(.*?)>>>>', patch_content, re.DOTALL)
                 modified = False
+                logged_blocks = []
                 for search, replace in blocks:
                     search_clean = search.strip("\r\n")
                     replace_clean = replace.strip("\r\n")
                     if search_clean in file_content:
                         file_content = file_content.replace(search_clean, replace_clean, 1)
                         modified = True
+                        logged_blocks.append({
+                            "search": search_clean,
+                            "replace": replace_clean
+                        })
                     else:
                         print(f"Patch search block not found in {rel_path}:\n{search_clean}")
                 
                 if modified:
                     target_path.write_text(file_content, encoding="utf-8")
                     applied_files.append(rel_path)
+                    self.recent_modifications.append({
+                        "path": rel_path,
+                        "type": "patch",
+                        "blocks": logged_blocks
+                    })
+                    self.modification_history.append({
+                        "path": rel_path,
+                        "type": "patch"
+                    })
             except Exception as e:
                 print(f"Error executing self-modification <patch_file path=\"{rel_path}\">: {e}")
+
+        if applied_files:
+            self.virtual_world.update_state("last_interaction", f"Modified {', '.join(applied_files)}")
+            for f in applied_files:
+                if f not in self.virtual_world.state["knowledge_base"]:
+                    self.virtual_world.state["knowledge_base"].append(f)
 
         return applied_files
 
     def _normalize_command(self, message: str) -> str:
         command = " ".join(message.strip().split())
-        lowered = command.lower()
-
-        for prefix in (
-            "ira ",
-            "ira, ",
-            "ira: ",
-            "hey ira ",
-            "hey ira, ",
-            "hello ira ",
-            "hello ira, ",
-            "hi ira ",
-            "hi ira, ",
-            "please ",
-            "can you ",
-            "could you ",
-            "would you ",
-        ):
-            if lowered.startswith(prefix):
-                return command[len(prefix) :].strip()
-
+        
+        prefixes = [
+            "hey ira, ", "hey ira ", "hey, ira ", "hey, ", "hey ",
+            "hello ira, ", "hello ira ", "hello, ira ", "hello, ", "hello ",
+            "hi ira, ", "hi ira ", "hi, ira ", "hi, ", "hi ",
+            "please ", "can you ", "could you ", "would you ", "ira, ", "ira ", "ira: "
+        ]
+        
+        suffixes = [
+            " please", " thank you", " thanks", " now", " for me"
+        ]
+        
+        changed = True
+        while changed:
+            changed = False
+            lowered = command.lower()
+            for prefix in prefixes:
+                if lowered.startswith(prefix):
+                    command = command[len(prefix):].strip()
+                    changed = True
+                    break
+            if changed:
+                continue
+            
+            for suffix in suffixes:
+                if lowered.endswith(suffix):
+                    command = command[:-len(suffix)].strip()
+                    changed = True
+                    break
+                    
         return command
 
     def _looks_like_website(self, target: str) -> bool:

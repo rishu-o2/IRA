@@ -4,7 +4,7 @@ import sys
 from .assistant import IRAAssistant
 from .voice import VoiceAssistant
 
-WAKE_WORDS = {"hello", "wake up", "wake", "activate", "hey ira", "hello ira"}
+WAKE_WORDS = {"hello", "wake up", "wake", "activate", "hey ira", "hello ira", "ira"}
 SLEEP_WORDS = {"go to sleep", "sleep", "deactivate", "standby"}
 
 

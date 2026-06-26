@@ -104,7 +104,7 @@ function cleanVoiceCommand(transcript: string) {
 }
  
 function isWakePhrase(transcript: string) {
-  return /^\s*(?:(hey|hello|hi)\s*,?\s+ira|open\s+(?:my\s+)?(?:ira|laptop|computer)|wake\s+(?:my\s+)?(?:ira|laptop|computer)|activate\s+(?:my\s+)?(?:ira|laptop|computer))\b/i.test(transcript.trim());
+  return /^\s*(?:(hey|hello|hi)\s*,?\s+ira|open\s+(?:my\s+)?(?:ira|laptop|computer)|wake\s+(?:my\s+)?(?:ira|laptop|computer)|activate\s+(?:my\s+)?(?:ira|laptop|computer)|ira)\b/i.test(transcript.trim());
 }
  
 function getBackendURL(): string {
@@ -129,6 +129,13 @@ function App() {
   const [gestureMode, setGestureMode] = useState(false);
   const [gestureStatus, setGestureStatus] = useState("GESTURE INACTIVE");
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [virtualWorldState, setVirtualWorldState] = useState<{ mood: string; knowledge_base: string[]; last_interaction: string | null }>({
+    mood: "helpful",
+    knowledge_base: ["pasta", "coding", "assistant_logic"],
+    last_interaction: null
+  });
+  const [modificationHistory, setModificationHistory] = useState<any[]>([]);
+  // isSidebarOpen removed
   const autoStartedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioLevelTimerRef = useRef<number | null>(null);
@@ -147,6 +154,8 @@ function App() {
   const backendURLRef = useRef(getBackendURL());
   const cameraRetryTimerRef = useRef<number | null>(null);
   const cameraRetryCountRef = useRef(0);
+  const isSpeakingRef = useRef(false);
+  const lastSpokeTimeRef = useRef(0);
  
   function setFaceStatus(value: string) {
     faceStatusRef.current = value;
@@ -178,6 +187,19 @@ function App() {
       }
  
       if (event.type === "transcript" && event.text?.trim()) {
+        if (isSpeakingRef.current || window.speechSynthesis.speaking) {
+          return;
+        }
+        if (Date.now() - lastSpokeTimeRef.current < 2000) {
+          console.log("[IRA] Ignoring native transcript during post-speech guard window:", event.text);
+          return;
+        }
+        const confidence = typeof event.confidence === "number" ? event.confidence : 1.0;
+        if (confidence < 0.4) {
+          console.log(`[IRA] Ignoring low-confidence transcript (${confidence}): ${event.text}`);
+          return;
+        }
+
         const transcript = event.text.trim();
         setLastHeard(transcript);
         setVoiceStatus("HEARD YOU");
@@ -219,6 +241,24 @@ function App() {
  
     autoStartedRef.current = true;
     startFaceRecognition();
+ 
+    const fetchInitialVirtualWorld = async () => {
+      try {
+        const res = await fetch(`${backendURLRef.current}/virtual_world`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.virtual_world_state) {
+            setVirtualWorldState(data.virtual_world_state);
+          }
+          if (data.modifications) {
+            setModificationHistory(data.modifications);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to fetch initial virtual world status:", e);
+      }
+    };
+    fetchInitialVirtualWorld();
  
     if (window.iraDesktop?.platform === "win32") {
       setVoiceStatus("NATIVE VOICE STARTING");
@@ -340,15 +380,27 @@ function App() {
     utterance.rate = 0.94;
     utterance.volume = 1;
     utterance.onstart = () => {
+      isSpeakingRef.current = true;
       setIsSpeaking(true);
       setStatus("IRA SPEAKING");
       setVoiceStatus("REPLYING");
     };
     utterance.onend = () => {
+      isSpeakingRef.current = false;
+      lastSpokeTimeRef.current = Date.now();
       setIsSpeaking(false);
       setStatus("IRA ONLINE");
       if (shouldListenRef.current) {
         // Wait a moment after speaking before listening again
+        voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 600);
+      }
+    };
+    utterance.onerror = () => {
+      isSpeakingRef.current = false;
+      lastSpokeTimeRef.current = Date.now();
+      setIsSpeaking(false);
+      setStatus("IRA ONLINE");
+      if (shouldListenRef.current) {
         voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 600);
       }
     };
@@ -401,6 +453,13 @@ function App() {
     };
  
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (isSpeakingRef.current || window.speechSynthesis.speaking) {
+        return;
+      }
+      if (Date.now() - lastSpokeTimeRef.current < 1500) {
+        return;
+      }
+
       let transcript = "";
  
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -500,12 +559,18 @@ function App() {
     }
  
     const command = cleanVoiceCommand(transcript);
-    if (!command) {
+    
+    const IGNORED_NOISE_WORDS = new Set([
+      "a", "the", "oh", "um", "uh", "er", "i", "it", "so", "to", "of", "on", 
+      "at", "by", "an", "is", "am", "are", "was", "were", "be", "been", "being", 
+      "you", "your", "he", "she", "they", "we", "us", "yeah", "yes", "ok", "okay"
+    ]);
+
+    if (!command || IGNORED_NOISE_WORDS.has(command.toLowerCase())) {
       if (wake) {
         speak("Hello sir. I am awake and ready.");
         return;
       }
-      speak("Yes. I am here.");
       return;
     }
  
@@ -631,7 +696,18 @@ function App() {
   }
  
   async function sendCommandToBackend(command: string) {
-    const payload = await sendJsonToBackend<{ message: string }, { text?: string }>("/command", { message: command });
+    const payload = await sendJsonToBackend<
+      { message: string },
+      { text?: string; virtual_world_state?: any; modifications?: any[] }
+    >("/command", { message: command });
+
+    if (payload.virtual_world_state) {
+      setVirtualWorldState(payload.virtual_world_state);
+    }
+    if (payload.modifications && payload.modifications.length > 0) {
+      setModificationHistory((prev) => [...prev, ...payload.modifications!]);
+    }
+
     return payload.text ?? "Command completed.";
   }
  

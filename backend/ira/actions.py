@@ -241,3 +241,87 @@ def play_youtube_search(query: str) -> str:
     url = f"https://www.youtube.com/results?search_query={encoded}"
     webbrowser.open(url)
     return f"Searching YouTube for {clean_query}"
+
+
+def volume_up() -> str:
+    if os.name != "nt":
+        raise ActionError("Volume up is only supported on Windows.")
+    try:
+        user32 = ctypes.windll.user32
+        VK_VOLUME_UP = 0xAF
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        # Press and release volume up
+        user32.keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_EXTENDEDKEY, 0)
+        user32.keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    except Exception as exc:
+        raise ActionError("I could not increase the volume.") from exc
+    return "Increasing volume."
+
+
+def volume_down() -> str:
+    if os.name != "nt":
+        raise ActionError("Volume down is only supported on Windows.")
+    try:
+        user32 = ctypes.windll.user32
+        VK_VOLUME_DOWN = 0xAE
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        # Press and release volume down
+        user32.keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_EXTENDEDKEY, 0)
+        user32.keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    except Exception as exc:
+        raise ActionError("I could not decrease the volume.") from exc
+    return "Decreasing volume."
+
+
+def set_brightness(level: int) -> str:
+    if os.name != "nt":
+        raise ActionError("Brightness control is only supported on Windows.")
+    if not (0 <= level <= 100):
+        raise ActionError("Brightness level must be between 0 and 100.")
+    try:
+        # Use CIM/WMI WmiMonitorBrightnessMethods via powershell to set brightness
+        # Wrap cmdlet parameters securely
+        cmd = f'Powershell -Command "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods).WmiSetBrightness(0, {level})"'
+        subprocess.run(cmd, shell=True, check=True)
+    except Exception as exc:
+        raise ActionError("I could not set screen brightness. Your monitor might not support this control.") from exc
+    return f"Screen brightness set to {level}%."
+
+
+def get_battery_status() -> str:
+    if os.name != "nt":
+        raise ActionError("Battery status is only supported on Windows.")
+
+    class SYSTEM_POWER_STATUS(ctypes.Structure):
+        _fields_ = [
+            ("ACLineStatus", ctypes.c_byte),
+            ("BatteryFlag", ctypes.c_byte),
+            ("BatteryLifePercent", ctypes.c_byte),
+            ("Reserved1", ctypes.c_byte),
+            ("BatteryLifeTime", ctypes.c_ulong),
+            ("BatteryFullLifeTime", ctypes.c_ulong),
+        ]
+
+    status = SYSTEM_POWER_STATUS()
+    if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+        percent = status.BatteryLifePercent
+        if percent == 255:
+            return "Battery status is unknown."
+        charging = "charging" if status.ACLineStatus == 1 else "not charging"
+        return f"Battery is at {percent}%, and is currently {charging}."
+    raise ActionError("Could not retrieve system power or battery status.")
+
+
+def get_system_stats() -> str:
+    import psutil
+    cpu = psutil.cpu_percent(interval=0.1)
+    ram = psutil.virtual_memory().percent
+    battery_info = ""
+    try:
+        battery_info = " " + get_battery_status()
+    except Exception:
+        pass
+    return f"CPU usage is at {cpu}%, and RAM memory usage is at {ram}%.{battery_info}"
+

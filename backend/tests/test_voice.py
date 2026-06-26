@@ -56,6 +56,7 @@ def test_wake_and_sleep_words() -> None:
     assert is_wake_word("Hello") is True
     assert is_wake_word("wake up") is True
     assert is_wake_word("hey ira, what time is it?") is True
+    assert is_wake_word("ira") is True
     assert is_wake_word("tell me a joke") is False
 
     # Test sleep words
