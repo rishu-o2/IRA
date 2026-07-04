@@ -133,34 +133,33 @@ def open_app(app_name: str) -> str:
     }
 
     target = app_commands.get(normalized, app_name.strip())
-    # Prioritize registered app lookup before executable search
+    shortcut = _find_start_menu_shortcut(normalized)
+
     try:
+        if shortcut:
+            os.startfile(shortcut)  # type: ignore[attr-defined]
+            return f"Opening {app_name}"
+
         registered_app = _find_registered_app(target)
         if registered_app:
             os.startfile(registered_app)  # type: ignore[attr-defined]
             return f"Opening {app_name}"
 
-        # Fallback to executable lookup via shutil.which
-        executable = shutil.which(target)
-        if executable:
-            os.startfile(executable)  # type: ignore[attr-defined]
-            return f"Opening {app_name}"
-
-        # Check for start menu shortcut
-        shortcut = _find_start_menu_shortcut(normalized)
-        if shortcut:
-            os.startfile(shortcut)  # type: ignore[attr-defined]
-            return f"Opening {app_name}"
-
-        # Check for direct path existence
         target_path = Path(target).expanduser()
         if target_path.exists():
             os.startfile(target_path)  # type: ignore[attr-defined]
             return f"Opening {app_name}"
 
+        executable = shutil.which(target)
+        if executable:
+            os.startfile(executable)  # type: ignore[attr-defined]
+            return f"Opening {app_name}"
+
         raise ActionError(f"I could not find {app_name}. Try the app name from the Start Menu or use its full path.")
     except (OSError, ValueError) as exc:
         raise ActionError(f"I could not open {app_name}. Check that it is installed or try its full path.") from exc
+
+    return f"Opening {app_name}"
 
 
 def _find_start_menu_shortcut(app_name: str) -> str | None:
@@ -197,8 +196,8 @@ def _find_registered_app(executable_name: str) -> str | None:
         return None
 
     registry_paths = [
-        (winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{executable_name}"),
-        (winreg.HKEY_LOCAL_MACHINE, rf"Software\Microsoft\Windows\CurrentVersion\App Paths\{executable_name}"),
+        (winreg.HKEY_CURRENT_USER, rf"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable_name}"),
+        (winreg.HKEY_LOCAL_MACHINE, rf"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{executable_name}"),
     ]
 
     for hive, registry_path in registry_paths:
@@ -325,4 +324,3 @@ def get_system_stats() -> str:
     except Exception:
         pass
     return f"CPU usage is at {cpu}%, and RAM memory usage is at {ram}%.{battery_info}"
-
