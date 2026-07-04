@@ -50,7 +50,7 @@ class IRAAssistant:
             if lowered in {"commands"}:
                 return AssistantResponse(self._help_text())
 
-            if lowered in {
+            if any(phrase in lowered for phrase in {
                 "what did you update",
                 "what did you change",
                 "recent modifications",
@@ -59,13 +59,42 @@ class IRAAssistant:
                 "show updates",
                 "what changes did you make",
                 "what have you updated",
-            }:
+                "show me what you updated",
+                "show me what you are updating",
+                "show me what you change",
+                "show me the changes",
+                "show me the code changes",
+                "show me the code you changed",
+                "where did you update",
+                "where are you updating",
+                "where did you change",
+                "show me where the program is going to change",
+                "show me where you are changing",
+            }):
                 if not self.modification_history:
                     return AssistantResponse("I have not made any modifications to my program files in this session.")
                 
                 lines = ["In this session, I have modified the following files:"]
                 for idx, mod in enumerate(self.modification_history, 1):
-                    lines.append(f"{idx}. `{mod['path']}` ({mod['type']} modification)")
+                    lines.append(f"\n{idx}. `{mod['path']}` ({mod['type']} modification):")
+                    if mod["type"] == "patch" and "blocks" in mod:
+                        for b_idx, block in enumerate(mod["blocks"], 1):
+                            lines.append(f"   Block {b_idx}:")
+                            lines.append("   ```diff")
+                            for line in block["search"].splitlines():
+                                lines.append(f"   - {line}")
+                            for line in block["replace"].splitlines():
+                                lines.append(f"   + {line}")
+                            lines.append("   ```")
+                    elif mod["type"] == "write" and "content" in mod:
+                        lines.append("   ```python")
+                        content_lines = mod["content"].splitlines()
+                        if len(content_lines) > 15:
+                            lines.extend([f"   {l}" for l in content_lines[:15]])
+                            lines.append("   ... (truncated)")
+                        else:
+                            lines.extend([f"   {l}" for l in content_lines])
+                        lines.append("   ```")
                 return AssistantResponse("\n".join(lines))
 
             if lowered in {"time", "what time is it", "tell me the time", "current time"}:
@@ -278,7 +307,8 @@ class IRAAssistant:
                 })
                 self.modification_history.append({
                     "path": rel_path,
-                    "type": "write"
+                    "type": "write",
+                    "content": content
                 })
             except Exception as e:
                 print(f"Error executing self-modification <write_file path=\"{rel_path}\">: {e}")
@@ -319,7 +349,8 @@ class IRAAssistant:
                     })
                     self.modification_history.append({
                         "path": rel_path,
-                        "type": "patch"
+                        "type": "patch",
+                        "blocks": logged_blocks
                     })
             except Exception as e:
                 print(f"Error executing self-modification <patch_file path=\"{rel_path}\">: {e}")

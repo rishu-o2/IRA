@@ -106,6 +106,22 @@ function cleanVoiceCommand(transcript: string) {
 function isWakePhrase(transcript: string) {
   return /^\s*(?:(hey|hello|hi)\s*,?\s+ira|open\s+(?:my\s+)?(?:ira|laptop|computer)|wake\s+(?:my\s+)?(?:ira|laptop|computer)|activate\s+(?:my\s+)?(?:ira|laptop|computer)|ira)\b/i.test(transcript.trim());
 }
+
+function cleanTextForSpeech(text: string): string {
+  // Remove markdown code blocks (e.g. ```diff ... ``` or ```python ... ```)
+  let clean = text.replace(/```[\s\S]*?```/g, "");
+  
+  // Remove system notes: [System note: ...]
+  clean = clean.replace(/\[System note:.*?\]/gi, "");
+
+  // Remove lines starting with - or + if they contain code patterns/diff lines
+  clean = clean.replace(/^\s*[-+]\s+.*$/gm, "");
+
+  // Normalize spaces and newlines
+  clean = clean.replace(/\s+/g, " ").trim();
+  
+  return clean;
+}
  
 function getBackendURL(): string {
   const host = window.location.hostname;
@@ -135,7 +151,7 @@ function App() {
     last_interaction: null
   });
   const [modificationHistory, setModificationHistory] = useState<any[]>([]);
-  // isSidebarOpen removed
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const autoStartedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioLevelTimerRef = useRef<number | null>(null);
@@ -156,6 +172,8 @@ function App() {
   const cameraRetryCountRef = useRef(0);
   const isSpeakingRef = useRef(false);
   const lastSpokeTimeRef = useRef(0);
+  const isUsingBrowserSpeechRef = useRef(false);
+  const backendVoiceLoopActiveRef = useRef(false);
  
   function setFaceStatus(value: string) {
     faceStatusRef.current = value;
@@ -187,6 +205,9 @@ function App() {
       }
  
       if (event.type === "transcript" && event.text?.trim()) {
+        if (isUsingBrowserSpeechRef.current) {
+          return;
+        }
         if (isSpeakingRef.current || window.speechSynthesis.speaking) {
           return;
         }
@@ -195,7 +216,7 @@ function App() {
           return;
         }
         const confidence = typeof event.confidence === "number" ? event.confidence : 1.0;
-        if (confidence < 0.4) {
+        if (confidence < 0.55) {
           console.log(`[IRA] Ignoring low-confidence transcript (${confidence}): ${event.text}`);
           return;
         }
@@ -260,38 +281,84 @@ function App() {
     };
     fetchInitialVirtualWorld();
  
-    if (window.iraDesktop?.platform === "win32") {
-      setVoiceStatus("NATIVE VOICE STARTING");
-      setStatus("VOICE ONLINE");
-      setIsVoiceListening(true);
-      return;
-    }
- 
     startVoiceSystem();
   }, []);
  
+  async function startBackendVoiceLoop() {
+    if (backendVoiceLoopActiveRef.current) {
+      return;
+    }
+    backendVoiceLoopActiveRef.current = true;
+    isUsingBrowserSpeechRef.current = false;
+    setIsVoiceListening(true);
+    setVoiceStatus("LISTENING");
+    setStatus("VOICE ONLINE");
+
+    while (shouldListenRef.current && !isUsingBrowserSpeechRef.current) {
+      if (isSpeakingRef.current || window.speechSynthesis.speaking) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+
+      try {
+        const response = await fetch(`${backendURLRef.current}/listen`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (isUsingBrowserSpeechRef.current) {
+          break;
+        }
+
+        if (data.ok && data.text) {
+          const transcript = data.text.trim();
+          if (transcript) {
+            setLastHeard(transcript);
+            setVoiceStatus("HEARD YOU");
+            setStatus("PROCESSING VOICE");
+            await handleVoiceCommand(transcript);
+          }
+        }
+      } catch (err) {
+        console.error("[IRA] Backend voice loop error:", err);
+        setVoiceStatus("VOICE DISCONNECTED");
+        setStatus("CHECK BACKEND SERVER");
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    backendVoiceLoopActiveRef.current = false;
+  }
+
   async function startVoiceSystem() {
+    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!Recognition) {
+      console.log("[IRA] Web Speech API not supported. Falling back to backend voice listener.");
+      isUsingBrowserSpeechRef.current = false;
+      void startBackendVoiceLoop();
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
       startMicLevelMonitor(stream);
+      isUsingBrowserSpeechRef.current = true;
       window.setTimeout(() => startVoiceRecognition(), 350);
     } catch (error) {
-      const errorName = error instanceof DOMException ? error.name : "Unknown";
-      if (errorName === "NotFoundError") {
-        setVoiceStatus("NO MIC DETECTED");
-        setStatus("CHECK MICROPHONE");
-        return;
-      }
- 
-      if (errorName === "NotReadableError") {
-        setVoiceStatus("MIC BUSY");
-        setStatus("CLOSE OTHER MIC APPS");
-        return;
-      }
- 
-      setVoiceStatus(`MIC ERROR: ${errorName}`);
-      setStatus("ALLOW MICROPHONE");
+      console.warn("[IRA] Microphone capture failed. Falling back to backend voice listener.", error);
+      isUsingBrowserSpeechRef.current = false;
+      void startBackendVoiceLoop();
     }
   }
  
@@ -374,7 +441,19 @@ function App() {
     }
     window.speechSynthesis.cancel();
  
-    const utterance = new SpeechSynthesisUtterance(text);
+    const spokenText = cleanTextForSpeech(text);
+    if (!spokenText) {
+      isSpeakingRef.current = false;
+      lastSpokeTimeRef.current = Date.now();
+      setIsSpeaking(false);
+      setStatus("IRA ONLINE");
+      if (shouldListenRef.current) {
+        voiceRestartTimerRef.current = window.setTimeout(() => startVoiceRecognition(), 600);
+      }
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(spokenText);
     utterance.voice = pickFemaleVoice(voices.length > 0 ? voices : window.speechSynthesis.getVoices());
     utterance.pitch = 1.12;
     utterance.rate = 0.94;
@@ -446,6 +525,7 @@ function App() {
     let hasDetectedSpeech = false;
  
     recognition.onstart = () => {
+      isUsingBrowserSpeechRef.current = true;
       voiceErrorCountRef.current = 0;
       setIsVoiceListening(true);
       setVoiceStatus("LISTENING");
@@ -514,6 +594,12 @@ function App() {
  
       if (errorType === "network" || errorType === "service-unavailable") {
         voiceErrorCountRef.current += 1;
+        if (voiceErrorCountRef.current > 3) {
+          console.warn("[IRA] Web Speech API network error limits reached. Falling back to backend voice listener.");
+          isUsingBrowserSpeechRef.current = false;
+          void startBackendVoiceLoop();
+          return;
+        }
         const delayMs = Math.min(1000 * voiceErrorCountRef.current, 5000);
         
         setVoiceStatus("SPEECH SERVICE RETRYING");
@@ -936,6 +1022,86 @@ function App() {
         />
         <button type="submit">Send</button>
       </form>
+
+      <button 
+        className="sidebar-toggle-btn" 
+        type="button"
+        onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+      >
+        {isSidebarOpen ? "Close Panel" : "System Panel"}
+      </button>
+
+      <div className={`virtual-world-sidebar ${isSidebarOpen ? "is-open" : ""}`}>
+        <div className="sidebar-header">
+          <h3>SYSTEM & CONTROLS</h3>
+          <span className="sidebar-subtitle">IRA Status & Code Modifications</span>
+        </div>
+
+        <div className="sidebar-section">
+          <h4>IRA STATUS</h4>
+          <div className="status-grid">
+            <div className="status-row">
+              <span className="row-label">Mood:</span>
+              <span className="row-val highlight">{virtualWorldState.mood}</span>
+            </div>
+            <div className="status-row">
+              <span className="row-label">Last Interaction:</span>
+              <span className="row-val">{virtualWorldState.last_interaction || "None"}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="sidebar-section">
+          <h4>KNOWLEDGE BASE</h4>
+          <div className="kb-tags">
+            {virtualWorldState.knowledge_base.map((item, idx) => (
+              <span key={idx} className="kb-tag">{item}</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="sidebar-section modifications-section">
+          <h4>CODE MODIFICATIONS</h4>
+          <div className="modifications-list">
+            {modificationHistory.length === 0 ? (
+              <span className="empty-text">No code modifications in this session yet.</span>
+            ) : (
+              modificationHistory.map((mod, idx) => (
+                <div key={idx} className="mod-card">
+                  <div className="mod-card-header">
+                    <span className={`mod-badge ${mod.type}`}>
+                      {mod.type.toUpperCase()}
+                    </span>
+                    <span className="mod-file-name" title={mod.path}>
+                      {mod.path}
+                    </span>
+                  </div>
+                  <div className="mod-card-body">
+                    {mod.type === "patch" ? (
+                      mod.blocks && mod.blocks.length > 0 ? (
+                        mod.blocks.map((block: any, bIdx: number) => (
+                          <div key={bIdx} className="diff-patch">
+                            {(block.search || "").split(/\r?\n/).map((line: string, lineIdx: number) => (
+                              <div key={`s-${lineIdx}`} className="diff-minus">- {line}</div>
+                            ))}
+                            {(block.replace || "").split(/\r?\n/).map((line: string, lineIdx: number) => (
+                              <div key={`r-${lineIdx}`} className="diff-plus">+ {line}</div>
+                            ))}
+                          </div>
+                        ))
+                      ) : (
+                        <span className="empty-text">Empty patch block.</span>
+                      )
+                    ) : (
+                      <pre className="code-content">{mod.content}</pre>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
     </main>
   );
 }

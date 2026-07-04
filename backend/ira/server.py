@@ -41,6 +41,10 @@ class IRARequestHandler(BaseHTTPRequestHandler):
             self._handle_face()
             return
 
+        if self.path == "/listen":
+            self._handle_listen()
+            return
+
         self._send_json({"ok": False, "error": "Not found"}, status=404)
 
     def _handle_command(self) -> None:
@@ -82,6 +86,14 @@ class IRARequestHandler(BaseHTTPRequestHandler):
                 "message": result.message,
             }
         )
+
+    def _handle_listen(self) -> None:
+        from .voice import listen_for_command
+        try:
+            text = listen_for_command()
+            self._send_json({"ok": True, "text": text})
+        except Exception as e:
+            self._send_json({"ok": False, "error": str(e)}, status=500)
 
     def log_message(self, format: str, *args: Any) -> None:
         return
