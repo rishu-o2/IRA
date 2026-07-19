@@ -1,6 +1,4 @@
 from ira.assistant import IRAAssistant
-
-
 class FakeConversation:
     def __init__(self, text: str = "API reply") -> None:
         self.text = text
