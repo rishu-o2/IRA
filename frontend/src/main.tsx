@@ -123,6 +123,8 @@ function cleanTextForSpeech(text: string): string {
   return clean;
 }
  
+const ENABLE_BROWSER_SPEECH = false; // Feature flag for single voice engine migration
+
 function getBackendURL(): string {
   const host = window.location.hostname;
  
@@ -341,6 +343,20 @@ function App() {
   }
 
   async function startVoiceSystem() {
+    if (!ENABLE_BROWSER_SPEECH) {
+      console.log("[IRA] Browser Speech Recognition disabled. Using backend voice listener.");
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+        startMicLevelMonitor(stream);
+      } catch (error) {
+        console.warn("[IRA] Microphone capture failed.", error);
+      }
+      isUsingBrowserSpeechRef.current = false;
+      void startBackendVoiceLoop();
+      return;
+    }
+
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!Recognition) {
       console.log("[IRA] Web Speech API not supported. Falling back to backend voice listener.");
@@ -488,6 +504,9 @@ function App() {
   }
  
   function startVoiceRecognition() {
+    if (!ENABLE_BROWSER_SPEECH) {
+      return;
+    }
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
  
     if (!Recognition) {

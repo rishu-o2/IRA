@@ -12,6 +12,33 @@ import os
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+import ctranslate2
+from faster_whisper import WhisperModel
+import tempfile
+
+_has_gpu = False
+try:
+    if hasattr(ctranslate2, "get_cuda_device_count") and ctranslate2.get_cuda_device_count() > 0:
+        _has_gpu = True
+except Exception:
+    pass
+
+_device = "cuda" if _has_gpu else "cpu"
+_compute_type = "float16" if _has_gpu else "int8"
+
+print("Device:", _device)
+print("Compute:", _compute_type)
+print("CUDA devices:", ctranslate2.get_cuda_device_count())
+
+try:
+    _whisper_model = WhisperModel("small", device=_device, compute_type=_compute_type)
+    print("[WHISPER] Model loaded")
+except Exception as e:
+    print(f"[WHISPER ERROR] Failed to load model: {e}")
+    _whisper_model = None
+
+print(f"[VOICE MODULE] Loaded from: {__file__}")
+
 # Cache the selected microphone index to avoid scanning on every request
 _cached_mic_index: int | None = None
 
@@ -60,8 +87,14 @@ def list_available_microphones() -> list[str]:
 
 
 def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> sr.AudioData | None:
-    """Record audio using sounddevice and return a SpeechRecognition AudioData object.
-    Returns ``None`` if recording fails.
+    """Record audio using sounddevice with voice activity detection.
+
+    Records small chunks continuously and stops after approximately 0.8 seconds
+    of silence or when the maximum recording length (5 seconds) is reached.
+    Returns a SpeechRecognition AudioData object, or None if recording fails.
+
+    The ``duration`` parameter is kept for signature compatibility but is no
+    longer used as a fixed recording window — 5 seconds is the hard cap.
     """
     try:
         import numpy as np
@@ -69,6 +102,18 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
     except Exception as e:
         logger.error(f"Sounddevice fallback unavailable: {e}")
         return None
+
+    # --- VAD tuning constants ---
+    MAX_SECONDS       = 5.0    # hard cap on total recording time
+    SILENCE_SECONDS   = 0.8    # consecutive silence required to stop
+    CHUNK_SECONDS     = 0.05   # size of each audio chunk (50 ms)
+    RMS_SPEECH_THRESH = 300    # RMS level above which audio is considered speech
+    # (int16 range is 0–32767; 300 is a conservative floor for speech)
+
+    chunk_frames = int(CHUNK_SECONDS * sample_rate)
+    max_chunks   = int(MAX_SECONDS / CHUNK_SECONDS)
+    silence_chunks_needed = int(SILENCE_SECONDS / CHUNK_SECONDS)
+
     # Allow user to specify device via env var
     env_index = os.getenv("SD_DEVICE_INDEX")
     if env_index is not None:
@@ -80,6 +125,7 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
             default_input = None
     else:
         default_input = None
+
     # Determine an input device with channels > 0
     if default_input is None:
         try:
@@ -101,13 +147,48 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
                 return None
             default_input = candidate
             logger.info(f"Selected sounddevice input device index: {default_input}")
+
     try:
-        logger.info(f"Recording {duration}s audio via sounddevice at {sample_rate}Hz on device {default_input}")
-        recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='int16', device=default_input)
-        sd.wait()
-        logger.debug(f"Recorded shape: {recording.shape}, dtype: {recording.dtype}")
+        logger.info(
+            f"VAD recording on device {default_input} at {sample_rate}Hz "
+            f"(max {MAX_SECONDS}s, silence threshold {SILENCE_SECONDS}s, "
+            f"RMS threshold {RMS_SPEECH_THRESH})"
+        )
+        all_chunks: list = []
+        silence_count = 0
+        speech_detected = False
+
+        for _ in range(max_chunks):
+            chunk = sd.rec(chunk_frames, samplerate=sample_rate, channels=1, dtype='int16', device=default_input)
+            sd.wait()
+
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+
+            if rms >= RMS_SPEECH_THRESH:
+                # Speech frame — reset silence counter and mark speech seen
+                speech_detected = True
+                silence_count = 0
+                all_chunks.append(chunk)
+            else:
+                # Silence frame
+                all_chunks.append(chunk)  # include trailing silence for natural end
+                if speech_detected:
+                    silence_count += 1
+                    if silence_count >= silence_chunks_needed:
+                        logger.info(
+                            f"VAD: silence detected after {len(all_chunks) * CHUNK_SECONDS:.2f}s — stopping."
+                        )
+                        break
+
+        if not speech_detected:
+            logger.warning("VAD: no speech detected in recording window.")
+            return None
+
+        recording = np.concatenate(all_chunks, axis=0)
+        logger.debug(f"VAD recorded shape: {recording.shape}, dtype: {recording.dtype}")
         audio_bytes = recording.tobytes()
-        logger.debug(f"Recorded {len(audio_bytes)} bytes")
+        logger.debug(f"VAD recorded {len(audio_bytes)} bytes")
+
         # Save to WAV for debugging purposes
         try:
             wav_path = os.path.join(os.getcwd(), "last_recording.wav")
@@ -116,12 +197,14 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
                 wf.setsampwidth(2)  # 16-bit = 2 bytes
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_bytes)
-            logger.info(f"Saved recorded audio to {wav_path}")
+            logger.info(f"Saved VAD audio to {wav_path}")
         except Exception as e:
             logger.warning(f"Failed to save WAV file: {e}")
+
         return sr.AudioData(audio_bytes, sample_rate, 2)
+
     except Exception as e:
-        logger.error(f"Sounddevice recording failed: {e}")
+        logger.error(f"Sounddevice VAD recording failed: {e}")
         return None
 
 
@@ -129,41 +212,98 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     """Listens using speech_recognition and transcribes using Google Cloud Speech API.
     Tries the PyAudio microphone first; if unavailable, falls back to sounddevice.
     """
+    print("========== ENTERED listen_for_command ==========")
+    total_start = time.perf_counter()
+    print("[VOICE] Entered listen_for_command()")
     # Debug: list available microphones (PyAudio)
     try:
         names = list_available_microphones()
         logger.debug(f"PyAudio microphones detected ({len(names)}): {names}")
     except Exception as e:
+        print(f"[VOICE ERROR] {e}")
         logger.debug(f"Failed to list PyAudio microphones: {e}")
     recognizer = sr.Recognizer()
     recognizer.dynamic_energy_threshold = True
     audio = None
     # Try PyAudio microphone
     try:
+        print("[VOICE] Creating microphone")
         mic = get_working_microphone()
+        print("[VOICE] Microphone created")
         with mic as source:
+            print("[VOICE] Adjusting for ambient noise...")
+            calib_start = time.perf_counter()
             recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            calib_end = time.perf_counter()
+            print("[VOICE] Ambient calibration complete")
+            print(f"[PERF] Ambient calibration: {(calib_end - calib_start) * 1000:.2f} ms")
             print("Listening using PyAudio...")
+            print("[VOICE] Waiting for speech...")
+            listen_start = time.perf_counter()
             audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+            listen_end = time.perf_counter()
+            print("[VOICE] Audio captured successfully")
+            print("[WHISPER] Audio captured")
+            print(f"[PERF] Listening: {(listen_end - listen_start) * 1000:.2f} ms")
     except Exception as e:
+        print(f"[VOICE ERROR] {e}")
         logger.warning(f"PyAudio microphone failed ({e}); falling back to sounddevice.")
+        listen_start = time.perf_counter()
         audio = record_via_sounddevice(duration=phrase_time_limit)
+        listen_end = time.perf_counter()
+        if audio is not None:
+            print("[VOICE] Audio captured successfully")
+            print("[WHISPER] Audio captured")
+            print(f"[PERF] Listening: {(listen_end - listen_start) * 1000:.2f} ms")
     if audio is None:
         logger.warning("No audio captured from either PyAudio or sounddevice.")
+        print("[VOICE] Returning transcript")
+        print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
+        print("========== EXITING listen_for_command ==========")
         return None
+    
+    if _whisper_model is None:
+        print("[WHISPER ERROR] Whisper model is not loaded")
+        print("[VOICE] Returning transcript")
+        print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
+        print("========== EXITING listen_for_command ==========")
+        return None
+
+    temp_wav_path = None
     try:
-        # Primary: Google Web Speech API (requires internet)
-        text = recognizer.recognize_google(audio)
-        return text.strip()
+        print("[WHISPER] Transcribing...")
+        # Save captured audio to temporary WAV file
+        save_start = time.perf_counter()
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
+            temp_wav.write(audio.get_wav_data())
+            temp_wav_path = temp_wav.name
+        save_end = time.perf_counter()
+        print(f"[PERF] Saving WAV: {(save_end - save_start) * 1000:.2f} ms")
+
+        # Transcribe the WAV file
+        trans_start = time.perf_counter()
+        segments, info = _whisper_model.transcribe(temp_wav_path)
+        transcript = " ".join([segment.text for segment in segments])
+        trans_end = time.perf_counter()
+        print(f"[WHISPER] Transcript: {transcript}")
+        print(f"[PERF] Whisper transcription: {(trans_end - trans_start) * 1000:.2f} ms")
+        print("[VOICE] Returning transcript")
+        print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
+        print("========== EXITING listen_for_command ==========")
+        return transcript.strip()
     except Exception as e:
-        logger.warning(f"Google recognition failed: {e}. Trying offline recognizer.")
-        try:
-            # Offline fallback using PocketSphinx if available
-            text = recognizer.recognize_sphinx(audio)
-            return text.strip()
-        except Exception as e2:
-            logger.error(f"Offline recognition also failed: {e2}")
-            return None
+        print(f"[WHISPER ERROR] {e}")
+        print("[VOICE] Returning transcript")
+        print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
+        print("========== EXITING listen_for_command ==========")
+        return None
+    finally:
+        # Delete temporary WAV file after transcription
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            try:
+                os.remove(temp_wav_path)
+            except Exception as e_del:
+                print(f"[WHISPER ERROR] Failed to delete temporary file: {e_del}")
 
 
 

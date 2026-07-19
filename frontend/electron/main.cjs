@@ -294,7 +294,7 @@ app.whenReady().then(async () => {
   });
   await startBackend();
   createWindow();
-  startNativeSpeech();
+  // startNativeSpeech(); // Disabled for single voice engine migration
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
