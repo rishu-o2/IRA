@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -37,8 +38,27 @@ class IRAAssistant:
         self.virtual_world = VirtualWorld()
         self.recent_modifications = []
         self.modification_history = []
+        self._llm_time: float = 0.0  # seconds; set by _handle_internal when LLM is called
 
+    # ------------------------------------------------------------------
+    # Public entry point — measures and logs per-stage performance
+    # ------------------------------------------------------------------
     def handle(self, message: str) -> AssistantResponse:
+        """Profiling wrapper: delegates to _handle_internal and prints [PERF] logs."""
+        self._llm_time = 0.0
+        t_start = time.perf_counter()
+        response = self._handle_internal(message)
+        t_end   = time.perf_counter()
+
+        total_ms  = (t_end - t_start) * 1000
+        llm_ms    = self._llm_time * 1000
+        intent_ms = total_ms - llm_ms
+
+        print(f"[PERF] Command processing: {intent_ms:.0f} ms")
+        print(f"[PERF] Response generation: {llm_ms:.0f} ms")
+        return response
+
+    def _handle_internal(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
         lowered = command.lower()
         self.recent_modifications = []
@@ -269,7 +289,9 @@ class IRAAssistant:
             )
 
         try:
-            reply_text = self.conversation.reply(command)
+            t_llm_start = time.perf_counter()
+            reply_text  = self.conversation.reply(command)
+            self._llm_time = time.perf_counter() - t_llm_start
             applied_mods = self._apply_self_modifications(reply_text)
             if applied_mods:
                 reply_text += f"\n\n[System note: Applied changes to {', '.join(applied_mods)}]"

@@ -31,7 +31,11 @@ print("Compute:", _compute_type)
 print("CUDA devices:", ctranslate2.get_cuda_device_count())
 
 try:
-    _whisper_model = WhisperModel("small", device=_device, compute_type=_compute_type)
+    _whisper_model = WhisperModel(
+        "tiny.en",
+        device=_device,
+        compute_type=_compute_type,
+    )
     print("[WHISPER] Model loaded")
 except Exception as e:
     print(f"[WHISPER ERROR] Failed to load model: {e}")
@@ -87,14 +91,14 @@ def list_available_microphones() -> list[str]:
 
 
 def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> sr.AudioData | None:
-    """Record audio using sounddevice with voice activity detection.
+    """Record audio using sounddevice.InputStream with voice activity detection.
 
-    Records small chunks continuously and stops after approximately 0.8 seconds
-    of silence or when the maximum recording length (5 seconds) is reached.
+    Buffers audio continuously and stops after approximately 0.7 seconds of
+    silence once speech has been detected, or after a hard cap of 8 seconds.
     Returns a SpeechRecognition AudioData object, or None if recording fails.
 
-    The ``duration`` parameter is kept for signature compatibility but is no
-    longer used as a fixed recording window — 5 seconds is the hard cap.
+    The ``duration`` parameter is kept for signature compatibility but is not
+    used as a fixed recording window.
     """
     try:
         import numpy as np
@@ -104,14 +108,14 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
         return None
 
     # --- VAD tuning constants ---
-    MAX_SECONDS       = 5.0    # hard cap on total recording time
-    SILENCE_SECONDS   = 0.8    # consecutive silence required to stop
+    MAX_SECONDS       = 8.0    # hard cap on total recording time
+    SILENCE_SECONDS   = 0.7    # consecutive silence required to stop after speech
     CHUNK_SECONDS     = 0.05   # size of each audio chunk (50 ms)
-    RMS_SPEECH_THRESH = 300    # RMS level above which audio is considered speech
-    # (int16 range is 0–32767; 300 is a conservative floor for speech)
+    RMS_SPEECH_THRESH = 300    # RMS level above which audio counts as speech
+    # (int16 range 0–32767; 300 is a conservative floor for human speech)
 
-    chunk_frames = int(CHUNK_SECONDS * sample_rate)
-    max_chunks   = int(MAX_SECONDS / CHUNK_SECONDS)
+    chunk_frames          = int(CHUNK_SECONDS * sample_rate)
+    max_chunks            = int(MAX_SECONDS / CHUNK_SECONDS)
     silence_chunks_needed = int(SILENCE_SECONDS / CHUNK_SECONDS)
 
     # Allow user to specify device via env var
@@ -126,16 +130,14 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
     else:
         default_input = None
 
-    # Determine an input device with channels > 0
+    # Determine an input device with at least one input channel
     if default_input is None:
         try:
-            # Try system default
             default_input = sd.default.device[0]
             if default_input is None or sd.query_devices(default_input)['max_input_channels'] == 0:
                 raise ValueError("Default device has no input channels")
             logger.info(f"Using sounddevice default input device index: {default_input}")
         except Exception:
-            # Find first suitable input device
             devices = sd.query_devices()
             candidate = None
             for dev in devices:
@@ -148,53 +150,78 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
             default_input = candidate
             logger.info(f"Selected sounddevice input device index: {default_input}")
 
+    logger.info(
+        f"VAD InputStream recording on device {default_input} at {sample_rate} Hz "
+        f"(max {MAX_SECONDS}s, silence {SILENCE_SECONDS}s, RMS thresh {RMS_SPEECH_THRESH})"
+    )
+
+    # Shared state accessed inside the callback
+    all_chunks: list     = []
+    silence_count: list  = [0]        # use list so the callback can mutate it
+    speech_detected: list = [False]
+    stop_flag: list      = [False]
+
+    def _callback(indata, frames, time_info, status):
+        """Called by sounddevice for every chunk_frames of audio."""
+        if stop_flag[0]:
+            raise sd.CallbackStop()
+
+        chunk = indata.copy()
+        rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+
+        all_chunks.append(chunk)
+
+        if rms >= RMS_SPEECH_THRESH:
+            if not speech_detected[0]:
+                print("[VOICE] Speech detected")
+            speech_detected[0] = True
+            silence_count[0]   = 0
+        else:
+            if speech_detected[0]:
+                silence_count[0] += 1
+                if silence_count[0] >= silence_chunks_needed:
+                    print("[VOICE] Silence detected")
+                    stop_flag[0] = True
+                    raise sd.CallbackStop()
+
     try:
-        logger.info(
-            f"VAD recording on device {default_input} at {sample_rate}Hz "
-            f"(max {MAX_SECONDS}s, silence threshold {SILENCE_SECONDS}s, "
-            f"RMS threshold {RMS_SPEECH_THRESH})"
-        )
-        all_chunks: list = []
-        silence_count = 0
-        speech_detected = False
+        rec_start = time.perf_counter()
+        print("[VOICE] Waiting for speech")
 
-        for _ in range(max_chunks):
-            chunk = sd.rec(chunk_frames, samplerate=sample_rate, channels=1, dtype='int16', device=default_input)
-            sd.wait()
+        with sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=chunk_frames,
+            device=default_input,
+            callback=_callback,
+        ):
+            # Block until silence stop or max time reached
+            elapsed = 0.0
+            poll_interval = CHUNK_SECONDS  # check at chunk resolution
+            while not stop_flag[0] and elapsed < MAX_SECONDS:
+                time.sleep(poll_interval)
+                elapsed = time.perf_counter() - rec_start
 
-            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+        rec_end = time.perf_counter()
+        rec_ms  = (rec_end - rec_start) * 1000
+        print("[VOICE] Recording stopped")
+        print(f"[PERF] Recording duration: {rec_ms:.0f} ms")
 
-            if rms >= RMS_SPEECH_THRESH:
-                # Speech frame — reset silence counter and mark speech seen
-                speech_detected = True
-                silence_count = 0
-                all_chunks.append(chunk)
-            else:
-                # Silence frame
-                all_chunks.append(chunk)  # include trailing silence for natural end
-                if speech_detected:
-                    silence_count += 1
-                    if silence_count >= silence_chunks_needed:
-                        logger.info(
-                            f"VAD: silence detected after {len(all_chunks) * CHUNK_SECONDS:.2f}s — stopping."
-                        )
-                        break
-
-        if not speech_detected:
-            logger.warning("VAD: no speech detected in recording window.")
+        if not speech_detected[0]:
+            logger.warning("VAD: no speech detected within the recording window.")
             return None
 
-        recording = np.concatenate(all_chunks, axis=0)
-        logger.debug(f"VAD recorded shape: {recording.shape}, dtype: {recording.dtype}")
+        recording  = np.concatenate(all_chunks, axis=0)
         audio_bytes = recording.tobytes()
-        logger.debug(f"VAD recorded {len(audio_bytes)} bytes")
+        logger.debug(f"VAD recorded shape: {recording.shape}, dtype: {recording.dtype}, bytes: {len(audio_bytes)}")
 
         # Save to WAV for debugging purposes
         try:
             wav_path = os.path.join(os.getcwd(), "last_recording.wav")
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)
-                wf.setsampwidth(2)  # 16-bit = 2 bytes
+                wf.setsampwidth(2)   # 16-bit = 2 bytes
                 wf.setframerate(sample_rate)
                 wf.writeframes(audio_bytes)
             logger.info(f"Saved VAD audio to {wav_path}")
@@ -204,7 +231,7 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
         return sr.AudioData(audio_bytes, sample_rate, 2)
 
     except Exception as e:
-        logger.error(f"Sounddevice VAD recording failed: {e}")
+        logger.error(f"Sounddevice InputStream VAD recording failed: {e}")
         return None
 
 
@@ -214,6 +241,7 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     """
     print("========== ENTERED listen_for_command ==========")
     total_start = time.perf_counter()
+    print("[PERF] Entering listen_for_command")
     print("[VOICE] Entered listen_for_command()")
     # Debug: list available microphones (PyAudio)
     try:
@@ -228,8 +256,11 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     # Try PyAudio microphone
     try:
         print("[VOICE] Creating microphone")
+        mic_init_start = time.perf_counter()
         mic = get_working_microphone()
+        mic_init_end = time.perf_counter()
         print("[VOICE] Microphone created")
+        print(f"[PERF] Mic init: {(mic_init_end - mic_init_start) * 1000:.0f} ms")
         with mic as source:
             print("[VOICE] Adjusting for ambient noise...")
             calib_start = time.perf_counter()
@@ -248,6 +279,11 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     except Exception as e:
         print(f"[VOICE ERROR] {e}")
         logger.warning(f"PyAudio microphone failed ({e}); falling back to sounddevice.")
+        # sounddevice device discovery counts as mic init
+        mic_init_start = time.perf_counter()
+        # record_via_sounddevice selects the device internally
+        mic_init_end = time.perf_counter()
+        print(f"[PERF] Mic init: {(mic_init_end - mic_init_start) * 1000:.0f} ms")
         listen_start = time.perf_counter()
         audio = record_via_sounddevice(duration=phrase_time_limit)
         listen_end = time.perf_counter()
@@ -279,14 +315,26 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
             temp_wav_path = temp_wav.name
         save_end = time.perf_counter()
         print(f"[PERF] Saving WAV: {(save_end - save_start) * 1000:.2f} ms")
+        print(f"[PERF] WAV encode: {(save_end - save_start) * 1000:.0f} ms")
 
-        # Transcribe the WAV file
+        # Transcribe the WAV file — CPU-optimised inference parameters:
+        #   beam_size=1               greedy decoding; no beam search overhead
+        #   condition_on_previous_text=False  skip cross-attention over prior tokens
+        #   temperature=0             deterministic; disables fallback sampling loops
+        #   vad_filter=False          our own VAD already trimmed the audio
         trans_start = time.perf_counter()
-        segments, info = _whisper_model.transcribe(temp_wav_path)
+        segments, info = _whisper_model.transcribe(
+            temp_wav_path,
+            beam_size=1,
+            condition_on_previous_text=False,
+            temperature=0,
+            vad_filter=False,
+        )
         transcript = " ".join([segment.text for segment in segments])
         trans_end = time.perf_counter()
         print(f"[WHISPER] Transcript: {transcript}")
         print(f"[PERF] Whisper transcription: {(trans_end - trans_start) * 1000:.2f} ms")
+        print(f"[PERF] Whisper: {(trans_end - trans_start) * 1000:.0f} ms")
         print("[VOICE] Returning transcript")
         print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
         print("========== EXITING listen_for_command ==========")
@@ -342,8 +390,9 @@ class VoiceAssistant:
             return
 
         try:
+            tts_init_start = time.perf_counter()
             engine = self.pyttsx3.init()
-            
+
             # Try to find a female voice (similar to Samantha / Zira)
             voices = engine.getProperty("voices")
             female_voice = None
@@ -352,18 +401,24 @@ class VoiceAssistant:
                 if any(x in name_lower for x in ("zira", "hazel", "susan", "samantha", "female", "woman", "elena")):
                     female_voice = voice
                     break
-            
+
             if female_voice:
                 engine.setProperty("voice", female_voice.id)
             elif voices:
                 engine.setProperty("voice", voices[0].id)
-                
+
             # Set rate (speed of speech) - default is usually around 200, 175 is natural
             engine.setProperty("rate", 175)
             engine.setProperty("volume", 1.0)
-            
+
             engine.say(text)
+            tts_init_end = time.perf_counter()
+            print(f"[PERF] TTS synthesis: {(tts_init_end - tts_init_start) * 1000:.0f} ms")
+
+            playback_start = time.perf_counter()
             engine.runAndWait()
+            playback_end = time.perf_counter()
+            print(f"[PERF] Audio playback: {(playback_end - playback_start) * 1000:.0f} ms")
         except Exception as e:
             logger.error(f"Error in TTS speak: {e}")
 
