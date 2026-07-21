@@ -41,24 +41,24 @@ class IRARequestHandler(BaseHTTPRequestHandler):
         if self.path == "/command":
             self._handle_command()
             t_req_end = time.perf_counter()
-            print(f"[PERF] Total request: {(t_req_end - t_req_start) * 1000:.0f} ms")
+            print(f"[PERF] Total HTTP request: {(t_req_end - t_req_start) * 1000:.0f} ms")
             return
 
         if self.path == "/face":
             self._handle_face()
             t_req_end = time.perf_counter()
-            print(f"[PERF] Total request: {(t_req_end - t_req_start) * 1000:.0f} ms")
+            print(f"[PERF] Total HTTP request: {(t_req_end - t_req_start) * 1000:.0f} ms")
             return
 
         if self.path == "/listen":
             self._handle_listen()
             t_req_end = time.perf_counter()
-            print(f"[PERF] Total request: {(t_req_end - t_req_start) * 1000:.0f} ms")
+            print(f"[PERF] Total HTTP request: {(t_req_end - t_req_start) * 1000:.0f} ms")
             return
 
         self._send_json({"ok": False, "error": "Not found"}, status=404)
         t_req_end = time.perf_counter()
-        print(f"[PERF] Total request: {(t_req_end - t_req_start) * 1000:.0f} ms")
+        print(f"[PERF] Total HTTP request: {(t_req_end - t_req_start) * 1000:.0f} ms")
 
     def _handle_command(self) -> None:
         try:

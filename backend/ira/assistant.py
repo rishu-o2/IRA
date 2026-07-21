@@ -55,7 +55,7 @@ class IRAAssistant:
         intent_ms = total_ms - llm_ms
 
         print(f"[PERF] Command processing: {intent_ms:.0f} ms")
-        print(f"[PERF] Response generation: {llm_ms:.0f} ms")
+        print(f"[PERF] Gemini response generation: {llm_ms:.0f} ms")
         return response
 
     def _handle_internal(self, message: str) -> AssistantResponse:

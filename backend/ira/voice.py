@@ -186,6 +186,18 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
 
     try:
         rec_start = time.perf_counter()
+        
+        # Temporary debug logging
+        env_sd_index = os.getenv("SD_DEVICE_INDEX")
+        print(f"[VOICE] SD_DEVICE_INDEX = {env_sd_index}")
+        print(f"[VOICE] sd.default.device = {sd.default.device}")
+        print(f"[VOICE] Using input device #{default_input}")
+        try:
+            dev_name = sd.query_devices(default_input)["name"]
+            print(f"[VOICE] Device name: {dev_name}")
+        except Exception as e:
+            print(f"[VOICE] Device name error: {e}")
+            
         print("[VOICE] Waiting for speech")
 
         with sd.InputStream(
@@ -206,7 +218,7 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
         rec_end = time.perf_counter()
         rec_ms  = (rec_end - rec_start) * 1000
         print("[VOICE] Recording stopped")
-        print(f"[PERF] Recording duration: {rec_ms:.0f} ms")
+        print(f"[VOICE] Recording duration: {rec_ms:.0f} ms")
 
         if not speech_detected[0]:
             logger.warning("VAD: no speech detected within the recording window.")
@@ -241,7 +253,7 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     """
     print("========== ENTERED listen_for_command ==========")
     total_start = time.perf_counter()
-    print("[PERF] Entering listen_for_command")
+    print("[VOICE] Entering listen_for_command")
     print("[VOICE] Entered listen_for_command()")
     # Debug: list available microphones (PyAudio)
     try:
@@ -275,7 +287,7 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
             listen_end = time.perf_counter()
             print("[VOICE] Audio captured successfully")
             print("[WHISPER] Audio captured")
-            print(f"[PERF] Listening: {(listen_end - listen_start) * 1000:.2f} ms")
+            print(f"[PERF] Recording / VAD: {(listen_end - listen_start) * 1000:.2f} ms")
     except Exception as e:
         print(f"[VOICE ERROR] {e}")
         logger.warning(f"PyAudio microphone failed ({e}); falling back to sounddevice.")
@@ -290,7 +302,7 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
         if audio is not None:
             print("[VOICE] Audio captured successfully")
             print("[WHISPER] Audio captured")
-            print(f"[PERF] Listening: {(listen_end - listen_start) * 1000:.2f} ms")
+            print(f"[PERF] Recording / VAD: {(listen_end - listen_start) * 1000:.2f} ms")
     if audio is None:
         logger.warning("No audio captured from either PyAudio or sounddevice.")
         print("[VOICE] Returning transcript")
@@ -314,8 +326,7 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
             temp_wav.write(audio.get_wav_data())
             temp_wav_path = temp_wav.name
         save_end = time.perf_counter()
-        print(f"[PERF] Saving WAV: {(save_end - save_start) * 1000:.2f} ms")
-        print(f"[PERF] WAV encode: {(save_end - save_start) * 1000:.0f} ms")
+        print(f"[PERF] WAV encoding: {(save_end - save_start) * 1000:.2f} ms")
 
         # Transcribe the WAV file — CPU-optimised inference parameters:
         #   beam_size=1               greedy decoding; no beam search overhead
@@ -334,7 +345,6 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
         trans_end = time.perf_counter()
         print(f"[WHISPER] Transcript: {transcript}")
         print(f"[PERF] Whisper transcription: {(trans_end - trans_start) * 1000:.2f} ms")
-        print(f"[PERF] Whisper: {(trans_end - trans_start) * 1000:.0f} ms")
         print("[VOICE] Returning transcript")
         print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
         print("========== EXITING listen_for_command ==========")
