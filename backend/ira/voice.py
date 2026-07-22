@@ -46,6 +46,11 @@ print(f"[VOICE MODULE] Loaded from: {__file__}")
 # Cache the selected microphone index to avoid scanning on every request
 _cached_mic_index: int | None = None
 
+_shared_recognizer = sr.Recognizer()
+_shared_recognizer.dynamic_energy_threshold = True
+
+_is_calibrated = False
+
 
 def get_working_microphone() -> sr.Microphone:
     """Return a microphone object.
@@ -262,8 +267,8 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
     except Exception as e:
         print(f"[VOICE ERROR] {e}")
         logger.debug(f"Failed to list PyAudio microphones: {e}")
-    recognizer = sr.Recognizer()
-    recognizer.dynamic_energy_threshold = True
+    global _shared_recognizer, _is_calibrated
+    recognizer = _shared_recognizer
     audio = None
     # Try PyAudio microphone
     try:
@@ -274,12 +279,16 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
         print("[VOICE] Microphone created")
         print(f"[PERF] Mic init: {(mic_init_end - mic_init_start) * 1000:.0f} ms")
         with mic as source:
-            print("[VOICE] Adjusting for ambient noise...")
-            calib_start = time.perf_counter()
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            calib_end = time.perf_counter()
-            print("[VOICE] Ambient calibration complete")
-            print(f"[PERF] Ambient calibration: {(calib_end - calib_start) * 1000:.2f} ms")
+            if not _is_calibrated:
+                print("[VOICE] Adjusting for ambient noise...")
+                calib_start = time.perf_counter()
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                calib_end = time.perf_counter()
+                _is_calibrated = True
+                print("[VOICE] Ambient calibration complete")
+                print(f"[PERF] Ambient calibration: {(calib_end - calib_start) * 1000:.2f} ms")
+            else:
+                print("[VOICE] Using cached ambient calibration")
             print("Listening using PyAudio...")
             print("[VOICE] Waiting for speech...")
             listen_start = time.perf_counter()
@@ -339,6 +348,8 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
             condition_on_previous_text=False,
             temperature=0,
             vad_filter=False,
+            language="en",
+            without_timestamps=True,
         )
         transcript = " ".join([segment.text for segment in segments])
         trans_end = time.perf_counter()

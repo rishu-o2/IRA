@@ -1,8 +1,57 @@
 from __future__ import annotations
 
+import subprocess
 import time
 from datetime import datetime
 from dataclasses import dataclass
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 – Fast local intent router
+# Commands in these dicts are resolved locally in O(1) without touching Gemini.
+# ---------------------------------------------------------------------------
+
+# Bare names (after "open ") that map directly to a URL.
+_FAST_WEBSITE_SHORTCUTS: dict[str, str] = {
+    "youtube":       "https://youtube.com",
+    "google":        "https://google.com",
+    "github":        "https://github.com",
+    "gmail":         "https://mail.google.com",
+    "google maps":   "https://maps.google.com",
+    "whatsapp":      "https://web.whatsapp.com",
+    "netflix":       "https://netflix.com",
+    "twitter":       "https://twitter.com",
+    "x":             "https://x.com",
+    "instagram":     "https://instagram.com",
+    "reddit":        "https://reddit.com",
+    "linkedin":      "https://linkedin.com",
+    "stack overflow": "https://stackoverflow.com",
+    "stackoverflow": "https://stackoverflow.com",
+}
+
+# Bare names (after "open ") that map to a known executable command.
+# These bypass open_app()'s filesystem search entirely.
+_FAST_APP_SHORTCUTS: dict[str, str] = {
+    "chrome":          "chrome",
+    "google chrome":   "chrome",
+    "edge":            "msedge",
+    "microsoft edge":  "msedge",
+    "firefox":         "firefox",
+    "calculator":      "calc",
+    "calc":            "calc",
+    "notepad":         "notepad",
+    "paint":           "mspaint",
+    "vscode":          "code",
+    "vs code":         "code",
+    "visual studio code": "code",
+    "terminal":        "wt",
+    "windows terminal": "wt",
+    "cmd":             "cmd",
+    "command prompt":  "cmd",
+    "powershell":      "powershell",
+    "word":            "winword",
+    "excel":           "excel",
+    "outlook":         "outlook",
+}
 
 from .actions import (
     ActionError,
@@ -117,14 +166,26 @@ class IRAAssistant:
                         lines.append("   ```")
                 return AssistantResponse("\n".join(lines))
 
-            if lowered in {"time", "what time is it", "tell me the time", "current time"}:
+            if lowered in {
+                "time", "what time is it", "tell me the time", "current time",
+                "time now", "what's the time", "whats the time",
+                "tell me the time now", "what is the time", "clock",
+            }:
+                print("[ROUTER] Fast-path: time query → local")
                 return AssistantResponse(f"It is {datetime.now().strftime('%I:%M %p').lstrip('0')}.")
+
+            if lowered in {
+                "date today", "today", "what is the date", "what is today's date",
+                "what's today's date", "whats today's date", "tell me the date",
+                "what is the date today", "date now", "today date",
+                "today's date", "todays date",
+            }:
+                print("[ROUTER] Fast-path: date query → local")
+                return AssistantResponse(f"Today is {datetime.now().strftime('%A, %B %d, %Y')}.")
 
             if lowered in {
                 "date",
                 "what date is it",
-                "what is today's date",
-                "today's date",
                 "open ira",
                 "wake ira",
                 "wake up ira",
@@ -145,8 +206,30 @@ class IRAAssistant:
             if lowered.startswith(("shut down", "shutdown", "turn off", "power off", "shut down the computer", "shutdown the computer", "turn off the computer", "power off the computer")):
                 return AssistantResponse(shutdown_system())
 
-            if lowered.startswith(("sleep", "go to sleep", "put the computer to sleep", "hibernate", "go to hibernate", "enter sleep mode", "enter hibernate mode")):
+            if lowered.startswith((
+                "sleep", "go to sleep", "put the computer to sleep",
+                "hibernate", "go to hibernate", "enter sleep mode", "enter hibernate mode",
+                "sleep pc", "sleep my", "sleep the", "sleep computer",
+                "sleep my computer", "suspend", "put pc to sleep",
+                "put my computer to sleep",
+            )):
+                print("[ROUTER] Fast-path: sleep → local")
                 return AssistantResponse(sleep_system())
+
+            if lowered.startswith((
+                "restart", "reboot", "restart computer", "restart the computer",
+                "restart my computer", "restart pc", "restart my pc",
+            )):
+                print("[ROUTER] Fast-path: restart → local")
+                try:
+                    import os as _os
+                    if _os.name != "nt":
+                        raise ActionError("Restart is only supported on Windows.")
+                    subprocess.run(["shutdown", "/r", "/t", "0"], check=True)
+                    return AssistantResponse("Restarting the computer.")
+                except subprocess.CalledProcessError:
+                    return AssistantResponse("I could not restart the computer.", handled=False)
+
 
             if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
                 return AssistantResponse(mute_system())
@@ -231,12 +314,6 @@ class IRAAssistant:
                 target = command[len("open website ") :].strip()
                 return AssistantResponse(open_website(target))
 
-            if lowered.startswith("open youtube"):
-                return AssistantResponse(open_website("youtube.com"))
-
-            if lowered.startswith("open google"):
-                return AssistantResponse(open_website("google.com"))
-
             if lowered.startswith("open downloads"):
                 return AssistantResponse(open_known_folder("downloads"))
 
@@ -248,6 +325,22 @@ class IRAAssistant:
 
             if lowered.startswith("open pictures") or lowered.startswith("open photos"):
                 return AssistantResponse(open_known_folder("pictures"))
+
+            # ------------------------------------------------------------------
+            # Phase 2.5 – Fast website shortcuts (O(1) dict lookup)
+            # Handles bare names: "open github", "open gmail", "open youtube" etc.
+            # Placed before the generic "open <target>" handler.
+            # ------------------------------------------------------------------
+            if lowered.startswith("open "):
+                _target_name = lowered[len("open "):].strip()
+                if _target_name in _FAST_WEBSITE_SHORTCUTS:
+                    _url = _FAST_WEBSITE_SHORTCUTS[_target_name]
+                    print(f"[ROUTER] Fast-path: open {_target_name} → website {_url}")
+                    return AssistantResponse(open_website(_url))
+                if _target_name in _FAST_APP_SHORTCUTS:
+                    _exe = _FAST_APP_SHORTCUTS[_target_name]
+                    print(f"[ROUTER] Fast-path: open {_target_name} → app {_exe}")
+                    return AssistantResponse(open_app(_exe))
 
             if lowered.startswith("search google for "):
                 query = command[len("search google for ") :].strip()

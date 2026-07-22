@@ -6,25 +6,20 @@
     "response": "(no transcript)",
     "perf_lines": [
       "[PERF] Mic init: 0 ms",
-      "[PERF] Total voice pipeline: 8263.25 ms"
+      "[PERF] Total voice pipeline: 8259.23 ms"
     ],
-    "wall_ms": 8263
+    "wall_ms": 8259
   },
   {
     "request": 2,
     "target_phrase": "Open Calculator",
-    "transcript": "Hello.",
-    "response": "Hello! I'm IRA. How can I help you with your desktop tasks today?",
+    "transcript": null,
+    "response": "(no transcript)",
     "perf_lines": [
       "[PERF] Mic init: 0 ms",
-      "[PERF] Recording / VAD: 2435.42 ms",
-      "[PERF] Audio conversion: 0.13 ms",
-      "[PERF] Whisper transcription: 555.32 ms",
-      "[PERF] Total voice pipeline: 2993.38 ms",
-      "[PERF] Command processing: 1 ms",
-      "[PERF] Gemini response generation: 1394 ms"
+      "[PERF] Total voice pipeline: 8076.79 ms"
     ],
-    "wall_ms": 4388
+    "wall_ms": 8077
   },
   {
     "request": 3,
@@ -33,9 +28,9 @@
     "response": "(no transcript)",
     "perf_lines": [
       "[PERF] Mic init: 0 ms",
-      "[PERF] Total voice pipeline: 8107.80 ms"
+      "[PERF] Total voice pipeline: 8041.98 ms"
     ],
-    "wall_ms": 8108
+    "wall_ms": 8042
   },
   {
     "request": 4,
@@ -44,9 +39,9 @@
     "response": "(no transcript)",
     "perf_lines": [
       "[PERF] Mic init: 0 ms",
-      "[PERF] Total voice pipeline: 8155.69 ms"
+      "[PERF] Total voice pipeline: 8068.41 ms"
     ],
-    "wall_ms": 8156
+    "wall_ms": 8068
   },
   {
     "request": 5,
@@ -55,7 +50,7 @@
     "response": "(no transcript)",
     "perf_lines": [
       "[PERF] Mic init: 0 ms",
-      "[PERF] Total voice pipeline: 8088.09 ms"
+      "[PERF] Total voice pipeline: 8087.54 ms"
     ],
     "wall_ms": 8088
   }

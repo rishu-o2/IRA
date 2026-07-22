@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import json
 from typing import Any
+import urllib.request
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import gemini_api_key, gemini_model
 
 GEMINI_MODELS_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# Phase 2.3: Cached Gemini Configuration & HTTP Opener
+_API_KEY = gemini_api_key()
+_MODEL = gemini_model()
+_GEMINI_URL = f"{GEMINI_MODELS_ENDPOINT}/{_MODEL}:generateContent"
+_HEADERS = {
+    "Content-Type": "application/json",
+    "x-goog-api-key": _API_KEY or "",
+}
+_HTTP_OPENER = urllib.request.build_opener()
+_ORIGINAL_URLOPEN = urlopen
+
 
 SYSTEM_PROMPT = (
     "You are IRA, the user's intelligent responsive desktop assistant. "
@@ -38,11 +51,11 @@ class GeminiConversation:
         if not clean_message:
             raise ConversationError("Tell me what you want to talk about.")
 
-        gemini_key = gemini_api_key()
+        gemini_key = gemini_api_key() or _API_KEY
         if not gemini_key:
             raise ConversationError("Conversation API is not configured. Add GEMINI_API_KEY to backend/.env.")
 
-        model = gemini_model()
+        model = gemini_model() or _MODEL
         try:
             body = self._send_generate_content_request(clean_message, gemini_key, model)
         except HTTPError as exc:
@@ -73,7 +86,7 @@ class GeminiConversation:
             ],
             "generationConfig": {"temperature": 0.7},
         }
-        endpoint = f"{GEMINI_MODELS_ENDPOINT}/{model}:generateContent"
+        endpoint = _GEMINI_URL if model == _MODEL and _GEMINI_URL else f"{GEMINI_MODELS_ENDPOINT}/{model}:generateContent"
         try:
             return _send_json_request(endpoint, payload, api_key)
         except HTTPError as exc:
@@ -93,17 +106,23 @@ class GeminiConversation:
 
 
 def _send_json_request(endpoint: str, payload: dict[str, Any], api_key: str) -> dict[str, Any]:
+    headers = _HEADERS if api_key == _API_KEY and _API_KEY else {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
     request = Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method="POST",
     )
 
-    with urlopen(request, timeout=25) as response:
+    if urlopen != _ORIGINAL_URLOPEN:
+        response_cm = urlopen(request, timeout=25)
+    else:
+        response_cm = _HTTP_OPENER.open(request, timeout=25)
+
+    with response_cm as response:
         return json.loads(response.read().decode("utf-8"))
 
 
