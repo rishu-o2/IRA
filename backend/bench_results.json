@@ -1,0 +1,62 @@
+[
+  {
+    "request": 1,
+    "target_phrase": "Hello",
+    "transcript": null,
+    "response": "(no transcript)",
+    "perf_lines": [
+      "[PERF] Mic init: 0 ms",
+      "[PERF] Total voice pipeline: 8263.25 ms"
+    ],
+    "wall_ms": 8263
+  },
+  {
+    "request": 2,
+    "target_phrase": "Open Calculator",
+    "transcript": "Hello.",
+    "response": "Hello! I'm IRA. How can I help you with your desktop tasks today?",
+    "perf_lines": [
+      "[PERF] Mic init: 0 ms",
+      "[PERF] Recording / VAD: 2435.42 ms",
+      "[PERF] Audio conversion: 0.13 ms",
+      "[PERF] Whisper transcription: 555.32 ms",
+      "[PERF] Total voice pipeline: 2993.38 ms",
+      "[PERF] Command processing: 1 ms",
+      "[PERF] Gemini response generation: 1394 ms"
+    ],
+    "wall_ms": 4388
+  },
+  {
+    "request": 3,
+    "target_phrase": "Open Notepad",
+    "transcript": null,
+    "response": "(no transcript)",
+    "perf_lines": [
+      "[PERF] Mic init: 0 ms",
+      "[PERF] Total voice pipeline: 8107.80 ms"
+    ],
+    "wall_ms": 8108
+  },
+  {
+    "request": 4,
+    "target_phrase": "What time is it",
+    "transcript": null,
+    "response": "(no transcript)",
+    "perf_lines": [
+      "[PERF] Mic init: 0 ms",
+      "[PERF] Total voice pipeline: 8155.69 ms"
+    ],
+    "wall_ms": 8156
+  },
+  {
+    "request": 5,
+    "target_phrase": "Thank you",
+    "transcript": null,
+    "response": "(no transcript)",
+    "perf_lines": [
+      "[PERF] Mic init: 0 ms",
+      "[PERF] Total voice pipeline: 8088.09 ms"
+    ],
+    "wall_ms": 8088
+  }
+]

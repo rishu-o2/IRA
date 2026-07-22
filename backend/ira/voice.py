@@ -109,7 +109,7 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
 
     # --- VAD tuning constants ---
     MAX_SECONDS       = 8.0    # hard cap on total recording time
-    SILENCE_SECONDS   = 0.7    # consecutive silence required to stop after speech
+    SILENCE_SECONDS   = 0.4    # consecutive silence required to stop after speech
     CHUNK_SECONDS     = 0.05   # size of each audio chunk (50 ms)
     RMS_SPEECH_THRESH = 300    # RMS level above which audio counts as speech
     # (int16 range 0–32767; 300 is a conservative floor for human speech)
@@ -317,25 +317,24 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
         print("========== EXITING listen_for_command ==========")
         return None
 
-    temp_wav_path = None
     try:
         print("[WHISPER] Transcribing...")
-        # Save captured audio to temporary WAV file
-        save_start = time.perf_counter()
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
-            temp_wav.write(audio.get_wav_data())
-            temp_wav_path = temp_wav.name
-        save_end = time.perf_counter()
-        print(f"[PERF] WAV encoding: {(save_end - save_start) * 1000:.2f} ms")
+        # Convert captured audio to normalized numpy array
+        conv_start = time.perf_counter()
+        import numpy as np
+        raw_data = audio.get_raw_data()
+        audio_array = np.frombuffer(raw_data, dtype=np.int16).astype(np.float32) / 32768.0
+        conv_end = time.perf_counter()
+        print(f"[PERF] Audio conversion: {(conv_end - conv_start) * 1000:.2f} ms")
 
-        # Transcribe the WAV file — CPU-optimised inference parameters:
+        # Transcribe the NumPy array directly — CPU-optimised inference parameters:
         #   beam_size=1               greedy decoding; no beam search overhead
         #   condition_on_previous_text=False  skip cross-attention over prior tokens
         #   temperature=0             deterministic; disables fallback sampling loops
         #   vad_filter=False          our own VAD already trimmed the audio
         trans_start = time.perf_counter()
         segments, info = _whisper_model.transcribe(
-            temp_wav_path,
+            audio_array,
             beam_size=1,
             condition_on_previous_text=False,
             temperature=0,
@@ -355,13 +354,6 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
         print(f"[PERF] Total voice pipeline: {(time.perf_counter() - total_start) * 1000:.2f} ms")
         print("========== EXITING listen_for_command ==========")
         return None
-    finally:
-        # Delete temporary WAV file after transcription
-        if temp_wav_path and os.path.exists(temp_wav_path):
-            try:
-                os.remove(temp_wav_path)
-            except Exception as e_del:
-                print(f"[WHISPER ERROR] Failed to delete temporary file: {e_del}")
 
 
 
