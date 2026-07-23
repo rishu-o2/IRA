@@ -5,8 +5,8 @@ from .base import Skill
 
 # We need to return the exact type expected by assistant.py handlers
 # which is AssistantResponse. We import it to instantiate it.
-from ira.assistant import AssistantResponse
-from ira.actions import (
+from ..assistant import AssistantResponse
+from ..actions import (
     lock_screen,
     shutdown_system,
     sleep_system,

@@ -132,6 +132,25 @@ class AssistantResponse:
     text: str
     handled: bool = True
 
+# ---------------------------------------------------------------------------
+# Phase 7.6 – Skill Framework registration
+# ---------------------------------------------------------------------------
+from .skills.registry import SkillRegistry
+from .skills.system import SystemSkill
+from .skills.app import AppSkill
+from .skills.browser import BrowserSkill
+from .skills.media import MediaSkill
+
+_registry: SkillRegistry = SkillRegistry()
+_registry.register(SystemSkill())
+_registry.register(BrowserSkill())
+_registry.register(AppSkill())
+_registry.register(MediaSkill())
+
+def get_skill_registry() -> SkillRegistry:
+    """Return the shared SkillRegistry singleton (read-only accessor)."""
+    return _registry
+
 
 class IRAAssistant:
     def __init__(self, conversation: GeminiConversation | None = None) -> None:
@@ -246,6 +265,18 @@ class IRAAssistant:
         command, lowered = ctx_result  # possibly rewritten
 
         try:
+            # ------------------------------------------------------------------
+            # Phase 7.6 – Skill Registry dispatch
+            # Runs after context resolution, before existing fast-path handlers.
+            # ------------------------------------------------------------------
+            skill = _registry.dispatch(command)
+            if skill is not None:
+                print(f"[SKILL] Routing '{command}' \u2192 {skill.name}")
+                skill_result = skill.execute(command)
+                if isinstance(skill_result, AssistantResponse):
+                    return skill_result
+                return AssistantResponse(str(skill_result))
+
             if lowered in {"commands"}:
                 return AssistantResponse(self._help_text())
 
@@ -532,6 +563,7 @@ class IRAAssistant:
         try:
             t_llm_start = time.perf_counter()
             reply_text  = self.conversation.reply(command)
+
             self._llm_time = time.perf_counter() - t_llm_start
             applied_mods = self._apply_self_modifications(reply_text)
             if applied_mods:

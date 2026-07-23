@@ -1,4 +1,4 @@
-from ira.planner.planner import TaskPlanner
+from ..planner.planner import TaskPlanner
 from .goal import Goal
 
 class GoalPlanner:
