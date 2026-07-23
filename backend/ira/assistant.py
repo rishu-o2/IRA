@@ -113,6 +113,26 @@ _planner: TaskPlanner = TaskPlanner()
 _executor: TaskExecutor = TaskExecutor(handler=None)
 
 # ---------------------------------------------------------------------------
+# Phase 8.3 – Agent Planning Foundation
+# ---------------------------------------------------------------------------
+from .agent.planner import AgentPlanner
+from .agent.executor import AgentExecutor
+
+_agent_planner: AgentPlanner = AgentPlanner()
+_agent_results = {}
+
+def _global_agent_handler(action: str):
+    queue = _executor.execute([action])
+    task = queue.all()[0]
+    from .execution.task import TaskStatus
+    if task.status == TaskStatus.FAILED:
+        raise RuntimeError(task.error)
+    _agent_results[action] = task.result
+    return task.result
+
+_agent_executor: AgentExecutor = AgentExecutor(handler=_global_agent_handler)
+
+# ---------------------------------------------------------------------------
 # Phase 5.2 – Shared GoalManager instance
 # ---------------------------------------------------------------------------
 _goal_manager: GoalManager = GoalManager()
@@ -191,9 +211,9 @@ class IRAAssistant:
         _context.remember_user(message)
 
         goal = _goal_manager.create(message)
-        tasks = goal.tasks
+        plan = _agent_planner.plan(message)
 
-        if len(tasks) <= 1:
+        if len(plan.steps) <= 1:
             _goal_manager.start(goal.id)
             self._llm_time = 0.0
             t_start = time.perf_counter()
@@ -218,21 +238,28 @@ class IRAAssistant:
             return response
         else:
             _goal_manager.start(goal.id)
-            queue = _executor.execute(tasks)
+            
+            global _agent_results
+            _agent_results.clear()
+            
+            plan = _agent_executor.execute(plan)
             
             results = []
             overall_handled = True
             
-            for task in queue.all():
-                from .execution.task import TaskStatus
-                if task.status == TaskStatus.FAILED:
-                    results.append(f"✗ {task.error}")
+            from .agent.step import StepStatus
+            for step in plan.all():
+                if step.status == StepStatus.FAILED:
+                    results.append(f"✗ {step.error}")
                     overall_handled = False
+                elif step.status == StepStatus.SKIPPED:
+                    pass
                 else:
-                    results.append(f"✓ {task.result}")
+                    res_text = _agent_results.get(step.action, "")
+                    results.append(f"✓ {res_text}")
             
-            if queue.failed():
-                failed_msgs = [str(t.error) for t in queue.failed()]
+            if plan.failed():
+                failed_msgs = [str(s.error) for s in plan.failed()]
                 _goal_manager.fail(goal.id, "; ".join(failed_msgs))
             else:
                 _goal_manager.complete(goal.id)
