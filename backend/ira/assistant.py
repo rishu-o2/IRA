@@ -72,6 +72,59 @@ from .actions import (
     get_system_stats,
 )
 from .conversation import ConversationError, GeminiConversation
+from .memory.context import ContextManager
+from .planner.planner import TaskPlanner
+from .execution.executor import TaskExecutor
+from .goals.manager import GoalManager
+
+# ---------------------------------------------------------------------------
+# Phase 6 – Mobile Companion Server
+# ---------------------------------------------------------------------------
+from .mobile.server import MobileServer
+_mobile_server: MobileServer | None = None
+
+def start_mobile_server():
+    if _mobile_server:
+        _mobile_server.start()
+
+def stop_mobile_server():
+    if _mobile_server:
+        _mobile_server.stop()
+
+def mobile_server_running() -> bool:
+    if _mobile_server:
+        return _mobile_server.is_running()
+    return False
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 – Single shared ContextManager for the lifetime of the process.
+# Routing logic never reads from this; it is purely an observation layer.
+# ---------------------------------------------------------------------------
+_context: ContextManager = ContextManager()
+
+# ---------------------------------------------------------------------------
+# Phase 2.7 – Shared TaskPlanner instance
+# ---------------------------------------------------------------------------
+_planner: TaskPlanner = TaskPlanner()
+
+# ---------------------------------------------------------------------------
+# Phase 5.1 – Shared TaskExecutor instance
+# ---------------------------------------------------------------------------
+_executor: TaskExecutor = TaskExecutor(handler=None)
+
+# ---------------------------------------------------------------------------
+# Phase 5.2 – Shared GoalManager instance
+# ---------------------------------------------------------------------------
+_goal_manager: GoalManager = GoalManager()
+
+def get_goal(goal_id: str):
+    return _goal_manager.get(goal_id)
+
+def get_all_goals():
+    return _goal_manager.all()
+
+def get_goal_manager():
+    return _goal_manager
 
 
 @dataclass(frozen=True)
@@ -89,23 +142,89 @@ class IRAAssistant:
         self.modification_history = []
         self._llm_time: float = 0.0  # seconds; set by _handle_internal when LLM is called
 
+        # Wrapper to translate unhandled responses into exceptions for the executor
+        def _exec_handler(cmd: str):
+            resp = self._handle_internal(cmd)
+            if not resp.handled:
+                raise RuntimeError(resp.text)
+            return resp
+            
+        _executor.handler = _exec_handler
+
+        # Initialize MobileServer singleton lazily exactly once
+        global _mobile_server
+        if _mobile_server is None:
+            _mobile_server = MobileServer(self)
+
     # ------------------------------------------------------------------
     # Public entry point — measures and logs per-stage performance
     # ------------------------------------------------------------------
     def handle(self, message: str) -> AssistantResponse:
-        """Profiling wrapper: delegates to _handle_internal and prints [PERF] logs."""
-        self._llm_time = 0.0
-        t_start = time.perf_counter()
-        response = self._handle_internal(message)
-        t_end   = time.perf_counter()
+        """Profiling wrapper: delegates to _handle_internal and prints [PERF] logs.
 
-        total_ms  = (t_end - t_start) * 1000
-        llm_ms    = self._llm_time * 1000
-        intent_ms = total_ms - llm_ms
+        Phase 2.6 – memory integration
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        * Records the incoming user message **before** routing begins.
+        * Records the outgoing assistant response **after** routing completes.
+        Routing logic itself is not altered.
+        """
+        # --- memory: record user turn ---
+        _context.remember_user(message)
 
-        print(f"[PERF] Command processing: {intent_ms:.0f} ms")
-        print(f"[PERF] Gemini response generation: {llm_ms:.0f} ms")
-        return response
+        goal = _goal_manager.create(message)
+        tasks = goal.tasks
+
+        if len(tasks) <= 1:
+            _goal_manager.start(goal.id)
+            self._llm_time = 0.0
+            t_start = time.perf_counter()
+            response = self._handle_internal(message)
+            t_end   = time.perf_counter()
+
+            total_ms  = (t_end - t_start) * 1000
+            llm_ms    = self._llm_time * 1000
+            intent_ms = total_ms - llm_ms
+
+            print(f"[PERF] Command processing: {intent_ms:.0f} ms")
+            print(f"[PERF] Gemini response generation: {llm_ms:.0f} ms")
+
+            if response.handled:
+                _goal_manager.complete(goal.id)
+            else:
+                _goal_manager.fail(goal.id, response.text)
+
+            # --- memory: record assistant turn ---
+            _context.remember_assistant(response.text)
+
+            return response
+        else:
+            _goal_manager.start(goal.id)
+            queue = _executor.execute(tasks)
+            
+            results = []
+            overall_handled = True
+            
+            for task in queue.all():
+                from .execution.task import TaskStatus
+                if task.status == TaskStatus.FAILED:
+                    results.append(f"✗ {task.error}")
+                    overall_handled = False
+                else:
+                    results.append(f"✓ {task.result}")
+            
+            if queue.failed():
+                failed_msgs = [str(t.error) for t in queue.failed()]
+                _goal_manager.fail(goal.id, "; ".join(failed_msgs))
+            else:
+                _goal_manager.complete(goal.id)
+            
+            combined_text = "\n".join(results)
+            combined_response = AssistantResponse(combined_text, handled=overall_handled)
+            
+            # --- memory: record assistant turn ---
+            _context.remember_assistant(combined_response.text)
+            
+            return combined_response
 
     def _handle_internal(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
@@ -114,6 +233,17 @@ class IRAAssistant:
 
         if not command:
             return AssistantResponse("I'm here. Tell me what you want to do.", handled=False)
+
+        # ------------------------------------------------------------------
+        # Phase 2.6 Step 3 – Context resolution (runs before the router).
+        # If the command contains a pronoun/reference word and context is
+        # available, rewrite it.  If context is missing, return a
+        # clarification immediately so Gemini is never called on ambiguity.
+        # ------------------------------------------------------------------
+        ctx_result = self._resolve_context(command, lowered)
+        if isinstance(ctx_result, AssistantResponse):
+            return ctx_result          # clarification – stop here
+        command, lowered = ctx_result  # possibly rewritten
 
         try:
             if lowered in {"commands"}:
@@ -286,19 +416,27 @@ class IRAAssistant:
 
             if lowered.startswith(("launch ", "start ")):
                 app_name = command.split(" ", 1)[1].strip()
-                return AssistantResponse(open_app(app_name))
+                result = open_app(app_name)      # may raise ActionError
+                _context.set_app(app_name)       # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith(("open application ", "open app ", "open program ")):
                 app_name = command.split(" ", 2)[2].strip()
-                return AssistantResponse(open_app(app_name))
+                result = open_app(app_name)      # may raise ActionError
+                _context.set_app(app_name)       # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith("go to "):
                 target = command[len("go to ") :].strip()
-                return AssistantResponse(open_website(target))
+                result = open_website(target)    # may raise ActionError
+                _context.set_website(target)     # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith("visit "):
                 target = command[len("visit ") :].strip()
-                return AssistantResponse(open_website(target))
+                result = open_website(target)    # may raise ActionError
+                _context.set_website(target)     # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith("open folder "):
                 target = command[len("open folder ") :].strip()
@@ -312,7 +450,9 @@ class IRAAssistant:
 
             if lowered.startswith("open website "):
                 target = command[len("open website ") :].strip()
-                return AssistantResponse(open_website(target))
+                result = open_website(target)    # may raise ActionError
+                _context.set_website(target)     # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith("open downloads"):
                 return AssistantResponse(open_known_folder("downloads"))
@@ -336,11 +476,15 @@ class IRAAssistant:
                 if _target_name in _FAST_WEBSITE_SHORTCUTS:
                     _url = _FAST_WEBSITE_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → website {_url}")
-                    return AssistantResponse(open_website(_url))
+                    result = open_website(_url)
+                    _context.set_website(_target_name)
+                    return AssistantResponse(result)
                 if _target_name in _FAST_APP_SHORTCUTS:
                     _exe = _FAST_APP_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → app {_exe}")
-                    return AssistantResponse(open_app(_exe))
+                    result = open_app(_exe)
+                    _context.set_app(_target_name)
+                    return AssistantResponse(result)
 
             if lowered.startswith("search google for "):
                 query = command[len("search google for ") :].strip()
@@ -361,10 +505,14 @@ class IRAAssistant:
             if lowered.startswith("open "):
                 target = command[len("open ") :].strip()
                 if self._looks_like_website(target):
-                    return AssistantResponse(open_website(target))
+                    result = open_website(target)   # may raise ActionError
+                    _context.set_website(target)    # only reached on success
+                    return AssistantResponse(result)
                 if self._is_known_folder(target):
                     return AssistantResponse(open_known_folder(target))
-                return AssistantResponse(open_app(target))
+                result = open_app(target)           # may raise ActionError
+                _context.set_app(target)            # only reached on success
+                return AssistantResponse(result)
 
             if lowered.startswith("play "):
                 query = command[len("play ") :].strip()
@@ -512,6 +660,122 @@ class IRAAssistant:
                     
         return command
 
+    # ------------------------------------------------------------------
+    # Phase 2.6 Step 3 – Context-resolution preprocessing
+    # ------------------------------------------------------------------
+
+    # Verbs that act on an application referent.
+    _APP_VERBS: frozenset[str] = frozenset({
+        "close", "minimize", "minimise", "maximize", "maximise",
+        "restore", "focus", "switch to", "reopen", "relaunch",
+    })
+
+    # Verbs that act on a website referent.
+    _WEB_VERBS: frozenset[str] = frozenset({
+        "refresh", "reload", "go back", "go forward",
+        "open again", "reopen", "revisit",
+    })
+
+    # Words that trigger context look-up when they appear as the object.
+    _CONTEXT_TRIGGERS: tuple[str, ...] = (
+        " it", " this", " that", " them", " again",
+        " the previous", " the same",
+    )
+
+    def _resolve_context(
+        self, command: str, lowered: str
+    ) -> tuple[str, str] | AssistantResponse:
+        """Attempt to rewrite a pronoun-bearing command using remembered context.
+
+        Returns
+        -------
+        tuple[str, str]
+            ``(resolved_command, resolved_lowered)`` — the (possibly rewritten)
+            command pair.  When no context word is present this is just the
+            original pair, unchanged.
+        AssistantResponse
+            A clarification response when a context word is found but the
+            referent cannot be determined unambiguously.  The caller must
+            return this immediately and skip routing.
+        """
+        # Fast exit – no pronoun / reference word in the command at all.
+        if not any(trigger in lowered for trigger in self._CONTEXT_TRIGGERS):
+            return command, lowered
+
+        state = _context.state
+
+        # ------------------------------------------------------------------
+        # Determine the verb (what the user wants to do).
+        # ------------------------------------------------------------------
+        verb: str | None = None
+        for v in self._APP_VERBS | self._WEB_VERBS:
+            if lowered.startswith(v + " ") or lowered == v:
+                verb = v
+                break
+        # Special multi-word verbs checked separately
+        for mv in ("switch to", "go back", "go forward", "open again"):
+            if lowered.startswith(mv):
+                verb = mv
+                break
+
+        if verb is None:
+            # There is a trigger word but we cannot identify the verb;
+            # let the router / Gemini handle it normally.
+            return command, lowered
+
+        # ------------------------------------------------------------------
+        # Choose which referent to use based on the verb category.
+        # ------------------------------------------------------------------
+        is_web_verb = verb in self._WEB_VERBS
+        is_app_verb = verb in self._APP_VERBS
+
+        # Some verbs can apply to either; prefer the most recently set one.
+        referent: str | None = None
+        if is_web_verb:
+            referent = state.last_website
+        elif is_app_verb:
+            referent = state.last_app
+        else:
+            # Ambiguous – prefer whichever was set more recently.
+            referent = state.last_app or state.last_website
+
+        if not referent:
+            # No context available – ask for clarification.
+            verb_display = verb.capitalize()
+            print("[CTX] No context available for pronoun resolution")
+            clarifications = {
+                "close":      "What would you like me to close?",
+                "minimize":   "What would you like me to minimize?",
+                "minimise":   "What would you like me to minimize?",
+                "maximize":   "What would you like me to maximize?",
+                "maximise":   "What would you like me to maximize?",
+                "restore":    "What would you like me to restore?",
+                "focus":      "Which application should I focus?",
+                "switch to":  "Which application would you like to switch to?",
+                "reopen":     "What would you like me to reopen?",
+                "relaunch":   "What would you like me to relaunch?",
+                "refresh":    "Which website would you like me to refresh?",
+                "reload":     "Which website would you like me to reload?",
+                "revisit":    "Which website would you like me to revisit?",
+                "open again": "Which website or application would you like me to open again?",
+            }
+            msg = clarifications.get(verb, f"What would you like me to {verb}?")
+            return AssistantResponse(msg, handled=False)
+
+        # ------------------------------------------------------------------
+        # Rewrite: strip the trailing pronoun/trigger and append the referent.
+        # ------------------------------------------------------------------
+        rewritten = lowered
+        for trigger in self._CONTEXT_TRIGGERS:
+            if rewritten.endswith(trigger):
+                rewritten = rewritten[: -len(trigger)].strip()
+                break
+
+        resolved = f"{rewritten} {referent}"
+        print(f'[CTX] Resolved "{command}" -> "{resolved}" (referent: {referent!r})')
+        return resolved, resolved.lower()
+
+
     def _looks_like_website(self, target: str) -> bool:
         lowered = target.lower()
         return lowered.startswith(("http://", "https://")) or "." in lowered
@@ -561,3 +825,27 @@ class IRAAssistant:
                 "- what time is it",
             ]
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 – Public accessors for the shared ContextManager singleton.
+# These are intentionally read-only helpers; they never mutate state.
+# ---------------------------------------------------------------------------
+
+def get_context() -> ContextManager:
+    """Return the module-level :class:`ContextManager` instance.
+
+    Gives future phases a single, stable reference to the full context
+    without exposing the private ``_context`` name directly.
+    """
+    return _context
+
+
+def get_last_command() -> str | None:
+    """Return the most recent user command recorded in memory, or *None*."""
+    return _context.state.last_command
+
+
+def get_last_app() -> str | None:
+    """Return the most recently set application name, or *None*."""
+    return _context.state.last_app
