@@ -259,3 +259,67 @@ def test_recent_modifications() -> None:
         os.remove(test_file_path)
 
 
+def test_remember_and_retrieve_memory_from_assistant(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("I am doing well.")
+    assistant = IRAAssistant(conversation=conversation)
+
+    remember_resp = assistant.handle("remember I use VS Code.")
+    assert remember_resp.handled is True
+    assert "remembered" in remember_resp.text.lower()
+
+    memory_reply = assistant.handle("what editor do I use?")
+    assert memory_reply.handled is True
+    assert "vs code" in memory_reply.text.lower()
+    assert conversation.messages == ["remember I use VS Code.", "what editor do I use?"]
+
+
+def test_forget_memory_removes_stored_fact(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember my favorite editor is VS Code.")
+    forget_resp = assistant.handle("forget favorite editor")
+    assert forget_resp.handled is True
+    assert "forgot" in forget_resp.text.lower()
+
+    memory_reply = assistant.handle("what editor do I use?")
+    assert memory_reply.handled is True
+    assert "vs code" not in memory_reply.text.lower()
+    assert "api reply" in memory_reply.text.lower()
+
+
+def test_what_do_you_know_about_me_reads_memory(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("I am doing well.")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember I prefer concise answers.")
+    memory_query = assistant.handle("what do you know about me")
+
+    assert memory_query.handled is True
+    assert "concise" in memory_query.text.lower()
+    assert conversation.messages == ["remember I prefer concise answers."]
+
+
+def test_missing_memory_falls_back_to_gemini(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("General answer")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("what is the weather today?")
+
+    assert response.handled is True
+    assert response.text == "General answer"
+    assert conversation.messages == ["what is the weather today?"]
+
+

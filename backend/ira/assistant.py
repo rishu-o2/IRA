@@ -4,6 +4,7 @@ import subprocess
 import time
 from datetime import datetime
 from dataclasses import dataclass
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Phase 2.5 – Fast local intent router
@@ -73,6 +74,11 @@ from .actions import (
 )
 from .conversation import ConversationError, GeminiConversation
 from .memory.context import ContextManager
+from .memory.consolidation import MemoryConsolidator
+from .memory.long_term import MemoryStore
+from .memory.long_term.storage import MemoryStorage
+from .memory.manager import MemoryManager
+from .memory.retrieval import Context, ContextRetriever
 from .planner.planner import TaskPlanner
 from .execution.executor import TaskExecutor
 from .goals.manager import GoalManager
@@ -101,6 +107,20 @@ def mobile_server_running() -> bool:
 # Routing logic never reads from this; it is purely an observation layer.
 # ---------------------------------------------------------------------------
 _context: ContextManager = ContextManager()
+
+# ---------------------------------------------------------------------------
+# Phase 9.6 - Shared long-term memory integration.
+# Retrieval is read-only before routing; learning happens only after a
+# successful interaction. Consolidation is periodic to keep request overhead low.
+# ---------------------------------------------------------------------------
+_memory_store: MemoryStore = MemoryStore(
+    MemoryStorage(str(Path(__file__).resolve().parent / "memory" / "long_term" / "memories.json"))
+)
+_memory_manager: MemoryManager = MemoryManager(_memory_store)
+_context_retriever: ContextRetriever = ContextRetriever(_memory_store)
+_memory_consolidator: MemoryConsolidator = MemoryConsolidator()
+_memory_consolidation_interval: int = 25
+_memory_changes_since_consolidation: int = 0
 
 # ---------------------------------------------------------------------------
 # Phase 2.7 – Shared TaskPlanner instance
@@ -172,6 +192,22 @@ def get_skill_registry() -> SkillRegistry:
     return _registry
 
 
+def _learn_from_long_term_memory(message: str, successful: bool) -> None:
+    global _memory_changes_since_consolidation
+
+    if not successful:
+        return
+
+    remembered = _memory_manager.remember(message)
+    if not remembered:
+        return
+
+    _memory_changes_since_consolidation += len(remembered)
+    if _memory_changes_since_consolidation >= _memory_consolidation_interval:
+        _memory_consolidator.consolidate(_memory_store)
+        _memory_changes_since_consolidation = 0
+
+
 class IRAAssistant:
     def __init__(self, conversation: GeminiConversation | None = None) -> None:
         self.conversation = conversation or GeminiConversation()
@@ -179,6 +215,7 @@ class IRAAssistant:
         self.virtual_world = VirtualWorld()
         self.recent_modifications = []
         self.modification_history = []
+        self._memory_context: Context = Context(())
         self._llm_time: float = 0.0  # seconds; set by _handle_internal when LLM is called
 
         # Wrapper to translate unhandled responses into exceptions for the executor
@@ -207,6 +244,8 @@ class IRAAssistant:
         * Records the outgoing assistant response **after** routing completes.
         Routing logic itself is not altered.
         """
+        self._memory_context = _context_retriever.retrieve(message)
+
         # --- memory: record user turn ---
         _context.remember_user(message)
 
@@ -234,6 +273,7 @@ class IRAAssistant:
 
             # --- memory: record assistant turn ---
             _context.remember_assistant(response.text)
+            _learn_from_long_term_memory(message, response.handled)
 
             return response
         else:
@@ -269,6 +309,7 @@ class IRAAssistant:
             
             # --- memory: record assistant turn ---
             _context.remember_assistant(combined_response.text)
+            _learn_from_long_term_memory(message, combined_response.handled)
             
             return combined_response
 
@@ -290,7 +331,9 @@ class IRAAssistant:
         if isinstance(ctx_result, AssistantResponse):
             return ctx_result          # clarification – stop here
         command, lowered = ctx_result  # possibly rewritten
-
+        memory_command = self._handle_memory_command(command, lowered)
+        if memory_command is not None:
+            return memory_command
         try:
             # ------------------------------------------------------------------
             # Phase 7.6 – Skill Registry dispatch
@@ -598,6 +641,72 @@ class IRAAssistant:
             return AssistantResponse(reply_text)
         except ConversationError as exc:
             return AssistantResponse(str(exc), handled=False)
+
+    def _handle_memory_command(self, command: str, lowered: str) -> AssistantResponse | None:
+        if lowered.startswith("remember "):
+            memory_text = command[len("remember "):].strip()
+            remembered = _memory_manager.remember(memory_text)
+            if remembered:
+                _memory_consolidator.consolidate(_memory_store)
+                summary = "; ".join(entry.content for entry in remembered)
+                return AssistantResponse(f"I remembered that {summary}.")
+            return AssistantResponse("I couldn't turn that into a personal memory.", handled=False)
+
+        if lowered.startswith("forget "):
+            memory_text = command[len("forget "):].strip()
+            forgotten = _memory_manager.forget(memory_text)
+            if forgotten:
+                _memory_consolidator.consolidate(_memory_store)
+                summary = "; ".join(entry.content for entry in forgotten)
+                return AssistantResponse(f"I forgot {summary}.")
+            return AssistantResponse("I don't have a matching memory to forget.")
+
+        if lowered in {"what do you remember", "what do you remember about me", "what do you know about me", "what do you know about me?"}:
+            memories = _memory_store.all()
+            if not memories:
+                return AssistantResponse("I don't have any personal memories stored yet.")
+            summary = "; ".join(entry.content for entry in memories)
+            return AssistantResponse(f"I remember these things about you: {summary}.")
+
+        return None
+
+    def _answer_from_memory(self, command: str, lowered: str) -> AssistantResponse | None:
+        if not self._memory_context.memories:
+            return None
+
+        if not self._looks_like_memory_question(lowered):
+            return None
+
+        memories = self._memory_context.memories[:3]
+        text = "; ".join(self._format_memory_entry(entry) for entry in memories)
+        return AssistantResponse(f"I remember that {text}.")
+
+    def _looks_like_memory_question(self, lowered: str) -> bool:
+        if not lowered.startswith(("what ", "which ", "who ", "when ", "where ", "why ", "how ")):
+            return False
+        if "about me" in lowered or "remember" in lowered or "know" in lowered:
+            return True
+        return any(term in lowered for term in {"favorite", "prefer", "use", "editor", "goal", "goal is", "project", "live", "work", "note"})
+
+    def _format_memory_entry(self, entry) -> str:
+        content = entry.content.lower()
+        if content.startswith("favorite "):
+            return content.replace("favorite ", "your favorite ", 1)
+        if content.startswith("prefers "):
+            return content.replace("prefers ", "you prefer ", 1)
+        if content.startswith("uses "):
+            return content.replace("uses ", "you use ", 1)
+        if content.startswith("goal = "):
+            return content.replace("goal = ", "your goal is ", 1)
+        if content.startswith("personal fact = "):
+            return content.replace("personal fact = ", "you are ", 1)
+        if content.startswith("lives in "):
+            return content.replace("lives in ", "you live in ", 1)
+        if content.startswith("works as "):
+            return content.replace("works as ", "you work as ", 1)
+        if content.startswith("works at "):
+            return content.replace("works at ", "you work at ", 1)
+        return content
 
     def _apply_self_modifications(self, reply_text: str) -> list[str]:
         import re
