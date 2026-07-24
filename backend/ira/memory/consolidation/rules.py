@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryType
+from ..long_term import MemoryEntry, MemoryType
 
 
 class ConsolidationRules:

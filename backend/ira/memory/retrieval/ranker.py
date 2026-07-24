@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryType
+from ..long_term import MemoryEntry, MemoryType
 
 
 class MemoryRanker:

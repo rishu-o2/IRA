@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryStore
+from ..long_term import MemoryEntry, MemoryStore
 
 from .extractor import MemoryExtractor
 from .rules import MemoryRules
@@ -50,7 +50,8 @@ class MemoryManager:
                     str(entry.metadata.get("value", "")),
                 ]
             ).casefold()
-            if normalized_query in haystack:
+            natural_haystack = self.rules.normalize(haystack.replace("_", " "))
+            if normalized_query in haystack or normalized_query in natural_haystack:
                 self.store.remove(entry.id)
                 removed.append(entry)
         return removed

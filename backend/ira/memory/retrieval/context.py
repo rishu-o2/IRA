@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryType
+from ..long_term import MemoryEntry, MemoryType
 
 
 @dataclass(frozen=True)

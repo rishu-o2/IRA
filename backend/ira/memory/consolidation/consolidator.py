@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryStore
+from ..long_term import MemoryEntry, MemoryStore
 
 from .report import ConsolidationReport
 from .rules import ConsolidationRules

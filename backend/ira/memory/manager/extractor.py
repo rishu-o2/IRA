@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryType
+from ..long_term import MemoryEntry, MemoryType
 
 from .rules import MemoryRules
 
@@ -29,6 +29,7 @@ class MemoryExtractor:
         normalized = self.rules.normalize(clause)
         return (
             self._favorite(normalized)
+            or self._exam(normalized)
             or self._preference(normalized)
             or self._goal(normalized)
             or self._personal_fact(normalized)
@@ -48,6 +49,13 @@ class MemoryExtractor:
             f"favorite_{subject.replace(' ', '_')}",
             value,
         )
+
+    def _exam(self, normalized: str) -> MemoryEntry | None:
+        match = re.match(r"my exam is (.+)", normalized)
+        if match is None:
+            return None
+        value = self._title_value(match.group(1))
+        return self._entry(MemoryType.NOTE, f"Exam = {value}", "exam", "exam", value)
 
     def _preference(self, normalized: str) -> MemoryEntry | None:
         match = re.match(r"i prefer (.+)", normalized)
@@ -104,7 +112,13 @@ class MemoryExtractor:
             match = re.match(pattern, normalized)
             if match is not None:
                 value = self._title_value(match.group(1))
-                return self._entry(MemoryType.GOAL, f"Goal = {value}", "goal", "goal", value)
+                if "preparing" in pattern:
+                    key = "preparation"
+                elif "project" in pattern or "building" in pattern:
+                    key = "project"
+                else:
+                    key = "goal"
+                return self._entry(MemoryType.GOAL, f"Goal = {value}", "goal", key, value)
         return None
 
     def _note(self, normalized: str) -> MemoryEntry | None:

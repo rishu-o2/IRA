@@ -75,13 +75,14 @@ from .actions import (
 from .conversation import ConversationError, GeminiConversation
 from .memory.context import ContextManager
 from .memory.consolidation import MemoryConsolidator
-from .memory.long_term import MemoryStore
+from .memory.long_term import MemoryStore, MemoryType
 from .memory.long_term.storage import MemoryStorage
 from .memory.manager import MemoryManager
 from .memory.retrieval import Context, ContextRetriever
 from .planner.planner import TaskPlanner
 from .execution.executor import TaskExecutor
 from .goals.manager import GoalManager
+from .suggestions import ProactiveSuggestionEngine
 
 # ---------------------------------------------------------------------------
 # Phase 6 – Mobile Companion Server
@@ -119,6 +120,7 @@ _memory_store: MemoryStore = MemoryStore(
 _memory_manager: MemoryManager = MemoryManager(_memory_store)
 _context_retriever: ContextRetriever = ContextRetriever(_memory_store)
 _memory_consolidator: MemoryConsolidator = MemoryConsolidator()
+_suggestion_engine: ProactiveSuggestionEngine = ProactiveSuggestionEngine()
 _memory_consolidation_interval: int = 25
 _memory_changes_since_consolidation: int = 0
 
@@ -186,6 +188,34 @@ _registry.register(SystemSkill())
 _registry.register(BrowserSkill())
 _registry.register(AppSkill())
 _registry.register(MediaSkill())
+
+_PREFERENCE_TARGETS: dict[str, dict[str, object]] = {
+    "editor": {
+        "keys": ("favorite_editor",),
+        "commands": {"open my editor", "open editor", "launch my editor", "launch editor", "start my editor", "start editor"},
+        "skill": "app",
+        "template": "open {target}",
+    },
+    "browser": {
+        "keys": ("favorite_browser",),
+        "commands": {"open my browser", "open browser", "launch my browser", "launch browser", "start my browser", "start browser"},
+        "skill": "app",
+        "template": "open {target}",
+    },
+    "terminal": {
+        "keys": ("favorite_terminal",),
+        "commands": {"open my terminal", "open terminal", "launch my terminal", "launch terminal", "start my terminal", "start terminal"},
+        "skill": "app",
+        "template": "open {target}",
+    },
+    "music_player": {
+        "keys": ("favorite_music_player",),
+        "commands": {"play music", "play my music", "resume music"},
+        "skill": "media",
+        "template": "play music",
+        "open_template": "open {target}",
+    },
+}
 
 def get_skill_registry() -> SkillRegistry:
     """Return the shared SkillRegistry singleton (read-only accessor)."""
@@ -334,11 +364,18 @@ class IRAAssistant:
         memory_command = self._handle_memory_command(command, lowered)
         if memory_command is not None:
             return memory_command
+        memory_statement = self._handle_memory_statement(command)
+        if memory_statement is not None:
+            return memory_statement
         try:
             # ------------------------------------------------------------------
             # Phase 7.6 – Skill Registry dispatch
             # Runs after context resolution, before existing fast-path handlers.
             # ------------------------------------------------------------------
+            preference_response = self._handle_preference_aware_skill(command, lowered)
+            if preference_response is not None:
+                return preference_response
+
             skill = _registry.dispatch(command)
             if skill is not None:
                 print(f"[SKILL] Routing '{command}' \u2192 {skill.name}")
@@ -630,6 +667,10 @@ class IRAAssistant:
                 handled=False,
             )
 
+        memory_answer = self._answer_from_memory(command, lowered)
+        if memory_answer is not None:
+            return memory_answer
+
         try:
             t_llm_start = time.perf_counter()
             reply_text  = self.conversation.reply(command)
@@ -642,14 +683,62 @@ class IRAAssistant:
         except ConversationError as exc:
             return AssistantResponse(str(exc), handled=False)
 
+    def _handle_preference_aware_skill(self, command: str, lowered: str) -> AssistantResponse | None:
+        for config in _PREFERENCE_TARGETS.values():
+            commands = config["commands"]
+            if not isinstance(commands, set) or lowered not in commands:
+                continue
+
+            target = self._preferred_target(command, config["keys"])
+            if target is None:
+                return None
+
+            skill_name = str(config["skill"])
+            skill = _registry.get(skill_name)
+            if skill is None:
+                return None
+
+            if skill_name == "media":
+                app_skill = _registry.get("app")
+                open_template = str(config.get("open_template", "open {target}"))
+                open_command = open_template.format(target=target)
+                media_command = str(config["template"]).format(target=target)
+                if app_skill is None:
+                    return skill.execute(media_command)
+
+                open_result = app_skill.execute(open_command)
+                if not open_result.handled:
+                    return open_result
+                media_result = skill.execute(media_command)
+                if not media_result.handled:
+                    return media_result
+                return AssistantResponse(f"{open_result.text}\n{media_result.text}")
+
+            routed_command = str(config["template"]).format(target=target)
+            return skill.execute(routed_command)
+
+        return None
+
+    def _preferred_target(self, query: str, keys: object) -> str | None:
+        if not isinstance(keys, tuple):
+            return None
+        context = _context_retriever.retrieve(query)
+        for memory in context.memories:
+            key = str(memory.metadata.get("key", "")).casefold()
+            if key in keys:
+                value = str(memory.metadata.get("value", "")).strip()
+                if value:
+                    return value
+        return None
+
     def _handle_memory_command(self, command: str, lowered: str) -> AssistantResponse | None:
         if lowered.startswith("remember "):
             memory_text = command[len("remember "):].strip()
-            remembered = _memory_manager.remember(memory_text)
-            if remembered:
-                _memory_consolidator.consolidate(_memory_store)
-                summary = "; ".join(entry.content for entry in remembered)
-                return AssistantResponse(f"I remembered that {summary}.")
+            save_result = self._save_memory(memory_text)
+            if save_result["remembered"]:
+                return AssistantResponse(self._memory_reply(save_result))
+            if save_result["duplicate"]:
+                return AssistantResponse("Memory updated.")
             return AssistantResponse("I couldn't turn that into a personal memory.", handled=False)
 
         if lowered.startswith("forget "):
@@ -657,18 +746,118 @@ class IRAAssistant:
             forgotten = _memory_manager.forget(memory_text)
             if forgotten:
                 _memory_consolidator.consolidate(_memory_store)
-                summary = "; ".join(entry.content for entry in forgotten)
-                return AssistantResponse(f"I forgot {summary}.")
-            return AssistantResponse("I don't have a matching memory to forget.")
+                return AssistantResponse("I've forgotten it.")
+            return AssistantResponse("I don't have anything stored about that yet.")
 
-        if lowered in {"what do you remember", "what do you remember about me", "what do you know about me", "what do you know about me?"}:
-            memories = _memory_store.all()
-            if not memories:
-                return AssistantResponse("I don't have any personal memories stored yet.")
-            summary = "; ".join(entry.content for entry in memories)
-            return AssistantResponse(f"I remember these things about you: {summary}.")
+        if lowered in {
+            "what do you remember",
+            "what do you remember?",
+            "what do you remember about me",
+            "what do you remember about me?",
+            "what do you know about me",
+            "what do you know about me?",
+            "show my memories",
+            "show me my memories",
+        }:
+            return self._list_memories(_memory_store.all(), "Here's what I know about you")
+
+        if lowered in {"show my preferences", "show my preferences?", "show me my preferences", "show me my preferences?"}:
+            return self._list_memories(
+                [entry for entry in _memory_store.all() if entry.type == MemoryType.PREFERENCE],
+                "Here are your preferences",
+                empty_text="I don't have any preferences stored yet.",
+            )
+
+        if lowered in {"show my goals", "show my goals?", "show me my goals", "show me my goals?"}:
+            return self._list_memories(
+                [entry for entry in _memory_store.all() if entry.type == MemoryType.GOAL],
+                "Here are your goals",
+                empty_text="I don't have any goals stored yet.",
+            )
 
         return None
+
+    def _handle_memory_statement(self, command: str) -> AssistantResponse | None:
+        if not _memory_manager.should_remember(command):
+            return None
+
+        save_result = self._save_memory(command)
+        if save_result["remembered"]:
+            return AssistantResponse(self._memory_reply(save_result))
+        if save_result["duplicate"]:
+            return AssistantResponse("Memory updated.")
+        return None
+
+    def _save_memory(self, text: str) -> dict[str, object]:
+        existing_by_key = {
+            entry.metadata.get("key"): entry.content
+            for entry in _memory_store.all()
+            if entry.metadata.get("key")
+        }
+        existing_contents = {entry.content.casefold() for entry in _memory_store.all()}
+        candidates = _memory_manager.extract(text)
+        remembered = _memory_manager.remember(text)
+
+        if remembered:
+            _memory_consolidator.consolidate(_memory_store)
+
+        new_memories = [
+            entry
+            for entry in remembered
+            if (
+                entry.metadata.get("key")
+                and entry.metadata.get("key") not in existing_by_key
+            )
+            or entry.content.casefold() not in existing_contents
+        ]
+        updated_preference = any(
+            entry.type == MemoryType.PREFERENCE
+            and entry.metadata.get("key") in existing_by_key
+            and existing_by_key[entry.metadata.get("key")] != entry.content
+            for entry in remembered
+        )
+        duplicate = bool(candidates) and not remembered
+        return {
+            "remembered": remembered,
+            "new_memories": new_memories,
+            "updated_preference": updated_preference,
+            "duplicate": duplicate,
+        }
+
+    def _memory_reply(self, save_result: dict[str, object]) -> str:
+        remembered = save_result["remembered"]
+        new_memories = save_result["new_memories"]
+        if not isinstance(remembered, list) or not remembered:
+            return "Memory updated."
+        if not isinstance(new_memories, list):
+            new_memories = []
+
+        if save_result["updated_preference"]:
+            base = "I've updated that preference."
+        else:
+            base = self._memory_acknowledgement(remembered[0])
+
+        suggestion = _suggestion_engine.suggest(new_memories)
+        if suggestion is None:
+            return base
+        return f"{base}\n\n{suggestion}"
+
+    def _memory_acknowledgement(self, memory) -> str:
+        category = str(memory.metadata.get("category", "")).casefold()
+        key = str(memory.metadata.get("key", "")).casefold()
+        value = str(memory.metadata.get("value", ""))
+
+        if category == "exam":
+            return "I've remembered your exam."
+        if memory.type == MemoryType.NOTE:
+            return "Understood."
+        if memory.type == MemoryType.PREFERENCE:
+            return "Got it."
+        if memory.type == MemoryType.GOAL and key == "preparation":
+            return f"I'll remember that you're preparing for {value}."
+        if memory.type == MemoryType.GOAL and key == "project":
+            return "I'll remember that."
+        return "I'll remember that."
 
     def _answer_from_memory(self, command: str, lowered: str) -> AssistantResponse | None:
         if not self._memory_context.memories:
@@ -681,6 +870,17 @@ class IRAAssistant:
         text = "; ".join(self._format_memory_entry(entry) for entry in memories)
         return AssistantResponse(f"I remember that {text}.")
 
+    def _list_memories(
+        self,
+        memories: list,
+        prefix: str,
+        empty_text: str = "I don't have any personal memories stored yet.",
+    ) -> AssistantResponse:
+        if not memories:
+            return AssistantResponse(empty_text)
+        summary = "; ".join(self._format_memory_entry(entry) for entry in memories)
+        return AssistantResponse(f"{prefix}: {summary}.")
+
     def _looks_like_memory_question(self, lowered: str) -> bool:
         if not lowered.startswith(("what ", "which ", "who ", "when ", "where ", "why ", "how ")):
             return False
@@ -689,23 +889,28 @@ class IRAAssistant:
         return any(term in lowered for term in {"favorite", "prefer", "use", "editor", "goal", "goal is", "project", "live", "work", "note"})
 
     def _format_memory_entry(self, entry) -> str:
-        content = entry.content.lower()
-        if content.startswith("favorite "):
-            return content.replace("favorite ", "your favorite ", 1)
-        if content.startswith("prefers "):
-            return content.replace("prefers ", "you prefer ", 1)
-        if content.startswith("uses "):
-            return content.replace("uses ", "you use ", 1)
-        if content.startswith("goal = "):
-            return content.replace("goal = ", "your goal is ", 1)
-        if content.startswith("personal fact = "):
-            return content.replace("personal fact = ", "you are ", 1)
-        if content.startswith("lives in "):
-            return content.replace("lives in ", "you live in ", 1)
-        if content.startswith("works as "):
-            return content.replace("works as ", "you work as ", 1)
-        if content.startswith("works at "):
-            return content.replace("works at ", "you work at ", 1)
+        content = entry.content.strip()
+        lowered = content.casefold()
+        if " = " in content:
+            subject, value = content.split(" = ", 1)
+            subject_lower = subject.casefold()
+            if subject_lower == "goal":
+                return f"your goal is {value}"
+            if subject_lower == "personal fact":
+                return f"you are {value}"
+            if subject_lower.startswith(("favorite ", "preferred ")):
+                return f"your {subject_lower} is {value}"
+            return f"your {subject_lower} is {value}"
+        if lowered.startswith("prefers "):
+            return f"you prefer {content[len('Prefers '):]}"
+        if lowered.startswith("uses "):
+            return f"you use {content[len('Uses '):]}"
+        if lowered.startswith("lives in "):
+            return f"you live in {content[len('Lives in '):]}"
+        if lowered.startswith("works as "):
+            return f"you work as {content[len('Works as '):]}"
+        if lowered.startswith("works at "):
+            return f"you work at {content[len('Works at '):]}"
         return content
 
     def _apply_self_modifications(self, reply_text: str) -> list[str]:

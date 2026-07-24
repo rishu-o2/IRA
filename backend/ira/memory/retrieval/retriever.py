@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.ira.memory.long_term import MemoryStore
+from ..long_term import MemoryStore
 
 from .context import Context
 from .ranker import MemoryRanker

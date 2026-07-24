@@ -268,12 +268,12 @@ def test_remember_and_retrieve_memory_from_assistant(monkeypatch) -> None:
 
     remember_resp = assistant.handle("remember I use VS Code.")
     assert remember_resp.handled is True
-    assert "remembered" in remember_resp.text.lower()
+    assert "vs code" in remember_resp.text.lower()
 
     memory_reply = assistant.handle("what editor do I use?")
     assert memory_reply.handled is True
     assert "vs code" in memory_reply.text.lower()
-    assert conversation.messages == ["remember I use VS Code.", "what editor do I use?"]
+    assert conversation.messages == []
 
 
 def test_forget_memory_removes_stored_fact(monkeypatch) -> None:
@@ -306,7 +306,306 @@ def test_what_do_you_know_about_me_reads_memory(monkeypatch) -> None:
 
     assert memory_query.handled is True
     assert "concise" in memory_query.text.lower()
-    assert conversation.messages == ["remember I prefer concise answers."]
+    assert conversation.messages == []
+
+
+def test_show_my_memories_lists_stored_memory(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember I live in Pune.")
+    memory_query = assistant.handle("show my memories")
+
+    assert memory_query.handled is True
+    assert "here's what i know about you" in memory_query.text.lower()
+    assert "pune" in memory_query.text.lower()
+    assert conversation.messages == []
+
+
+def test_show_my_preferences_lists_only_preferences(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember I prefer concise answers.")
+    assistant.handle("remember I live in Pune.")
+    preferences = assistant.handle("show my preferences")
+
+    assert preferences.handled is True
+    assert "preferences" in preferences.text.lower()
+    assert "concise" in preferences.text.lower()
+    assert "pune" not in preferences.text.lower()
+    assert conversation.messages == []
+
+
+def test_show_my_goals_lists_only_goals(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember I want to finish IRA memory integration.")
+    assistant.handle("remember I prefer concise answers.")
+    goals = assistant.handle("show my goals")
+
+    assert goals.handled is True
+    assert "goals" in goals.text.lower()
+    assert "ira memory integration" in goals.text.lower()
+    assert "concise" not in goals.text.lower()
+    assert conversation.messages == []
+
+
+def test_remember_updates_existing_memory(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    assistant.handle("remember my favorite editor is VS Code.")
+    update = assistant.handle("remember my favorite editor is PyCharm.")
+    memory_reply = assistant.handle("what editor do I use?")
+
+    assert update.handled is True
+    assert "updated" in update.text.lower()
+    assert "pycharm" in memory_reply.text.lower()
+    assert "vs code" not in memory_reply.text.lower()
+    assert conversation.messages == []
+
+
+def test_goal_memory_gets_progress_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("I'm preparing for my LPU viva.")
+
+    assert response.handled is True
+    assert "preparing" in response.text.lower()
+    assert "keep track of your progress" in response.text.lower()
+    assert conversation.messages == []
+
+
+def test_exam_memory_gets_reminder_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("My exam is on Monday.")
+
+    assert response.handled is True
+    assert "exam" in response.text.lower()
+    assert "remind you before it" in response.text.lower()
+    assert conversation.messages == []
+
+
+def test_project_memory_gets_active_goal_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("I'm building an AI assistant.")
+
+    assert response.handled is True
+    assert "active goals" in response.text.lower()
+    assert conversation.messages == []
+
+
+def test_preference_memory_gets_editor_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("My favorite editor is VS Code.")
+
+    assert response.handled is True
+    assert "vs code" in response.text.lower()
+    assert "open your editor" in response.text.lower()
+    assert conversation.messages == []
+
+
+def test_permanent_note_gets_future_conversation_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    response = assistant.handle("Always answer briefly.")
+
+    assert response.handled is True
+    assert "understood" in response.text.lower()
+    assert "future conversations" in response.text.lower()
+    assert conversation.messages == []
+
+
+def test_duplicate_memory_does_not_repeat_suggestion(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    conversation = FakeConversation("API reply")
+    assistant = IRAAssistant(conversation=conversation)
+
+    first = assistant.handle("My exam is on Monday.")
+    second = assistant.handle("My exam is on Monday.")
+
+    assert "remind you before it" in first.text.lower()
+    assert second.handled is True
+    assert second.text == "Memory updated."
+    assert "remind you before it" not in second.text.lower()
+    assert conversation.messages == []
+
+
+def test_memory_suggestion_does_not_execute_actions(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.assistant.open_app", lambda name: calls.append(name) or "opened")
+    monkeypatch.setattr("ira.assistant.open_website", lambda target: calls.append(target) or "opened")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    response = assistant.handle("My favorite editor is VS Code.")
+
+    assert response.handled is True
+    assert calls == []
+
+
+def test_editor_preference_routes_generic_editor_command(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    assistant.handle("remember my favorite editor is VS Code.")
+    response = assistant.handle("open my editor")
+
+    assert response.handled is True
+    assert calls == ["code"]
+    assert "Opening code" in response.text
+
+
+def test_browser_preference_routes_generic_browser_command(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    assistant.handle("remember my favorite browser is Chrome.")
+    response = assistant.handle("open browser")
+
+    assert response.handled is True
+    assert calls == ["chrome"]
+    assert "Opening chrome" in response.text
+
+
+def test_terminal_preference_routes_generic_terminal_command(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    assistant.handle("remember my favorite terminal is PowerShell.")
+    response = assistant.handle("open terminal")
+
+    assert response.handled is True
+    assert calls == ["Powershell"]
+    assert "Opening Powershell" in response.text
+
+
+def test_music_player_preference_opens_player_then_continues_media_flow(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    app_calls: list[str] = []
+    media_calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: app_calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.skills.media._play_pause_media", lambda: media_calls.append("play") or "Toggling media playback.")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    assistant.handle("remember my favorite music player is Spotify.")
+    response = assistant.handle("play music")
+
+    assert response.handled is True
+    assert app_calls == ["spotify"]
+    assert media_calls == ["play"]
+    assert "Opening spotify" in response.text
+    assert "Toggling media playback" in response.text
+
+
+def test_missing_editor_preference_keeps_existing_skill_fallback(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    response = assistant.handle("open editor")
+
+    assert response.handled is True
+    assert calls == ["editor"]
+    assert response.text == "Opening editor"
+
+
+def test_existing_specific_app_skill_routing_is_unchanged(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+
+    _memory_store.clear()
+    calls: list[str] = []
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+
+    response = assistant.handle("open notepad")
+
+    assert response.handled is True
+    assert calls == ["notepad"]
+    assert response.text == "Opening notepad"
+
+
+def test_preference_routing_uses_context_retriever_only(monkeypatch) -> None:
+    from ira.assistant import _memory_store
+    from ira.memory.retrieval import Context
+
+    _memory_store.clear()
+    calls: list[str] = []
+    retrieve_queries: list[str] = []
+    assistant = IRAAssistant(conversation=FakeConversation("API reply"))
+    assistant.handle("remember my favorite editor is VS Code.")
+    memory = _memory_store.all()[0]
+
+    def fake_retrieve(query: str, limit: int = 5) -> Context:
+        retrieve_queries.append(query)
+        return Context((memory,))
+
+    monkeypatch.setattr("ira.assistant._context_retriever.retrieve", fake_retrieve)
+    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+
+    response = assistant.handle("open my editor")
+
+    assert response.handled is True
+    assert retrieve_queries == ["open my editor", "open my editor"]
+    assert calls == ["code"]
 
 
 def test_missing_memory_falls_back_to_gemini(monkeypatch) -> None:
