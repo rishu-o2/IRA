@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from backend.ira.memory.long_term import MemoryEntry, MemoryStore, MemoryType
+from ira.memory.long_term import MemoryEntry, MemoryStore, MemoryType
 
 
 def test_add_memory_and_retrieve_it() -> None:
