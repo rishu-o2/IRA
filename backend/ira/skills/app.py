@@ -2,7 +2,8 @@ import re
 from .base import Skill
 from ..assistant import AssistantResponse
 from ..actions import ActionError
-from ..tools import desktop_tools
+from ..router import default_tool_router
+from ..tools import ToolRequest
 
 # Verbs that prefix commands but carry no semantic meaning for routing
 _VERBS = {"open", "launch", "start", "run"}
@@ -45,11 +46,17 @@ _ALIASES: dict[str, str] = {
 
 
 def open_app(app_name: str) -> str:
-    return desktop_tools.open_app(app_name)
+    result = default_tool_router.execute(ToolRequest("desktop", "open_app", {"app_name": app_name}))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
 
 
 def open_known_folder(folder_name: str) -> str:
-    return desktop_tools.open_known_folder(folder_name)
+    result = default_tool_router.execute(ToolRequest("filesystem", "open_known_folder", {"folder_name": folder_name}))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
 
 
 def _strip_verb(command: str) -> str:

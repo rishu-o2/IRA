@@ -13,7 +13,23 @@ import ctypes
 import os
 from .base import Skill
 from ..assistant import AssistantResponse
-from ..actions import open_website, search_web, ActionError
+from ..actions import ActionError
+from ..router import default_tool_router
+from ..tools import ToolRequest
+
+
+def open_website(url: str) -> str:
+    result = default_tool_router.execute(ToolRequest("browser", "open_website", {"url": url}))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+
+def search_web(query: str) -> str:
+    result = default_tool_router.execute(ToolRequest("browser", "search_web", {"query": query}))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
 
 # ---------------------------------------------------------------------------
 # Known website shortcuts – maps bare name → URL or resolvable domain

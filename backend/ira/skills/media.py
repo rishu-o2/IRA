@@ -13,7 +13,36 @@ import os
 from .base import Skill
 from ..assistant import AssistantResponse
 from ..actions import ActionError
-from ..tools import desktop_tools
+from ..router import default_tool_router
+from ..tools import ToolRequest
+
+
+def mute_system() -> str:
+    result = default_tool_router.execute(ToolRequest("system", "mute_system"))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+
+def volume_up() -> str:
+    result = default_tool_router.execute(ToolRequest("system", "volume_up"))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+
+def volume_down() -> str:
+    result = default_tool_router.execute(ToolRequest("system", "volume_down"))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+
+def play_youtube_search(query: str) -> str:
+    result = default_tool_router.execute(ToolRequest("media", "play_youtube_search", {"query": query}))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
 
 # ---------------------------------------------------------------------------
 # Private Win32 media-key helpers
@@ -202,16 +231,16 @@ class MediaSkill(Skill):
         try:
             # Volume – delegate to ira.actions
             if low in _MUTE_PHRASES:
-                return AssistantResponse(desktop_tools.mute_system())
+                return AssistantResponse(mute_system())
 
             if low in _UNMUTE_PHRASES:
-                return AssistantResponse(desktop_tools.mute_system())  # toggle
+                return AssistantResponse(mute_system())  # toggle
 
             if low in _VOLUME_UP_PHRASES:
-                return AssistantResponse(desktop_tools.volume_up())
+                return AssistantResponse(volume_up())
 
             if low in _VOLUME_DOWN_PHRASES:
-                return AssistantResponse(desktop_tools.volume_down())
+                return AssistantResponse(volume_down())
 
             # Next / previous
             if low in _NEXT_PHRASES:
@@ -232,7 +261,7 @@ class MediaSkill(Skill):
             if low in _PLAY_PHRASES or any(low.startswith(p) for p in _PLAY_PREFIXES):
                 if low.startswith("play ") and low.endswith(" on youtube"):
                     query = command[len("play ") : -len(" on youtube")].strip()
-                    return AssistantResponse(desktop_tools.play_youtube_search(query))
+                    return AssistantResponse(play_youtube_search(query))
                 return AssistantResponse(_play_pause_media())
 
         except ActionError as exc:

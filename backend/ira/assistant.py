@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -63,15 +62,68 @@ from .memory.long_term.storage import MemoryStorage
 from .memory.manager import LegacyMemoryManager, MemoryManager
 from .memory.retrieval import Context, ContextRetriever
 from .planner.planner import TaskPlanner
+from .router import default_tool_router
 from .execution.executor import TaskExecutor
 from .goals.manager import GoalManager
 from .suggestions import ProactiveSuggestionEngine
-from .tools import desktop_tools
+from .tools import ToolRequest
 
-open_app = desktop_tools.open_app
-open_website = desktop_tools.open_website
-get_battery_status = desktop_tools.get_battery_status
-get_system_stats = desktop_tools.get_system_stats
+def _run_tool(intent: str, command: str, **params: object) -> str:
+    result = default_tool_router.execute(ToolRequest(intent, command, params))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+def open_app(app_name: str) -> str:
+    return _run_tool("desktop", "open_app", app_name=app_name)
+
+def open_website(url: str) -> str:
+    return _run_tool("browser", "open_website", url=url)
+
+def open_path(target: str) -> str:
+    return _run_tool("filesystem", "open_path", target=target)
+
+def open_known_folder(folder_name: str) -> str:
+    return _run_tool("filesystem", "open_known_folder", folder_name=folder_name)
+
+def lock_screen() -> str:
+    return _run_tool("system", "lock_screen")
+
+def shutdown_system() -> str:
+    return _run_tool("system", "shutdown_system")
+
+def sleep_system() -> str:
+    return _run_tool("system", "sleep_system")
+
+def restart_system() -> str:
+    return _run_tool("system", "restart_system")
+
+def mute_system() -> str:
+    return _run_tool("system", "mute_system")
+
+def volume_up() -> str:
+    return _run_tool("system", "volume_up")
+
+def volume_down() -> str:
+    return _run_tool("system", "volume_down")
+
+def set_brightness(level: int) -> str:
+    return _run_tool("system", "set_brightness", level=level)
+
+def get_battery_status() -> str:
+    return _run_tool("system", "get_battery_status")
+
+def get_system_stats() -> str:
+    return _run_tool("system", "get_system_stats")
+
+def search_web(query: str) -> str:
+    return _run_tool("browser", "search_web", query=query)
+
+def play_youtube_search(query: str) -> str:
+    return _run_tool("media", "play_youtube_search", query=query)
+
+def call(app_name: str = "skype") -> str:
+    return _run_tool("communication", "call", app_name=app_name)
 
 # ---------------------------------------------------------------------------
 # Phase 6 – Mobile Companion Server
@@ -246,7 +298,7 @@ class IRAAssistant:
         self.modification_history = []
         self._memory_context: Context = Context(())
         self._llm_time: float = 0.0  # seconds; set by _handle_internal when LLM is called
-        self.brain = BrainOrchestrator(BrainPlanner(_agent_planner))
+        self.brain = BrainOrchestrator(BrainPlanner(_agent_planner), tool_router=default_tool_router)
 
         # Wrapper to translate unhandled responses into exceptions for the executor
         def _exec_handler(cmd: str):
@@ -477,10 +529,10 @@ class IRAAssistant:
                 return AssistantResponse(f"Today is {datetime.now().strftime('%A, %B %d, %Y')}.")
 
             if lowered.startswith(("lock screen", "lock my screen", "lock computer", "lock pc", "lock the screen")):
-                return AssistantResponse(desktop_tools.lock_screen())
+                return AssistantResponse(lock_screen())
 
             if lowered.startswith(("shut down", "shutdown", "turn off", "power off", "shut down the computer", "shutdown the computer", "turn off the computer", "power off the computer")):
-                return AssistantResponse(desktop_tools.shutdown_system())
+                return AssistantResponse(shutdown_system())
 
             if lowered.startswith((
                 "sleep", "go to sleep", "put the computer to sleep",
@@ -490,45 +542,38 @@ class IRAAssistant:
                 "put my computer to sleep",
             )):
                 print("[ROUTER] Fast-path: sleep → local")
-                return AssistantResponse(desktop_tools.sleep_system())
+                return AssistantResponse(sleep_system())
 
             if lowered.startswith((
                 "restart", "reboot", "restart computer", "restart the computer",
                 "restart my computer", "restart pc", "restart my pc",
             )):
                 print("[ROUTER] Fast-path: restart → local")
-                try:
-                    import os as _os
-                    if _os.name != "nt":
-                        raise ActionError("Restart is only supported on Windows.")
-                    subprocess.run(["shutdown", "/r", "/t", "0"], check=True)
-                    return AssistantResponse("Restarting the computer.")
-                except subprocess.CalledProcessError:
-                    return AssistantResponse("I could not restart the computer.", handled=False)
+                return AssistantResponse(restart_system())
 
 
             if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
-                return AssistantResponse(desktop_tools.mute_system())
+                return AssistantResponse(mute_system())
 
             if lowered.startswith(("unmute", "unmute the volume", "turn volume on", "turn on volume")):
-                return AssistantResponse(desktop_tools.mute_system())
+                return AssistantResponse(mute_system())
 
             if lowered.startswith(("volume up", "increase volume", "louder", "make it louder")):
-                return AssistantResponse(desktop_tools.volume_up())
+                return AssistantResponse(volume_up())
 
             if lowered.startswith(("volume down", "decrease volume", "quieter", "make it quieter")):
-                return AssistantResponse(desktop_tools.volume_down())
+                return AssistantResponse(volume_down())
 
             if "brightness" in lowered:
                 import re
                 match = re.search(r"(\d+)", lowered)
                 if match:
                     level = int(match.group(1))
-                    return AssistantResponse(desktop_tools.set_brightness(level))
+                    return AssistantResponse(set_brightness(level))
                 if "up" in lowered or "increase" in lowered or "brighter" in lowered:
-                    return AssistantResponse(desktop_tools.set_brightness(80))
+                    return AssistantResponse(set_brightness(80))
                 if "down" in lowered or "decrease" in lowered or "dimmer" in lowered:
-                    return AssistantResponse(desktop_tools.set_brightness(30))
+                    return AssistantResponse(set_brightness(30))
 
             if lowered.startswith(("battery", "check battery", "battery status", "how is the battery")):
                 return AssistantResponse(get_battery_status())
@@ -556,61 +601,61 @@ class IRAAssistant:
 
             if lowered.startswith(("call ", "make a call to ")):
                 try:
-                    return AssistantResponse(desktop_tools.open_app("skype"))
+                    return AssistantResponse(call("skype"))
                 except ActionError as exc:
                     return AssistantResponse(str(exc), handled=False)
 
             if lowered.startswith(("launch ", "start ")):
                 app_name = command.split(" ", 1)[1].strip()
-                result = desktop_tools.open_app(app_name)      # may raise ActionError
+                result = open_app(app_name)      # may raise ActionError
                 _context.set_app(app_name)       # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith(("open application ", "open app ", "open program ")):
                 app_name = command.split(" ", 2)[2].strip()
-                result = desktop_tools.open_app(app_name)      # may raise ActionError
+                result = open_app(app_name)      # may raise ActionError
                 _context.set_app(app_name)       # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("go to "):
                 target = command[len("go to ") :].strip()
-                result = desktop_tools.open_website(target)    # may raise ActionError
+                result = open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("visit "):
                 target = command[len("visit ") :].strip()
-                result = desktop_tools.open_website(target)    # may raise ActionError
+                result = open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("open folder "):
                 target = command[len("open folder ") :].strip()
                 if self._is_known_folder(target):
-                    return AssistantResponse(desktop_tools.open_known_folder(target))
-                return AssistantResponse(desktop_tools.open_path(target))
+                    return AssistantResponse(open_known_folder(target))
+                return AssistantResponse(open_path(target))
 
             if lowered.startswith("open file "):
                 target = command[len("open file ") :].strip()
-                return AssistantResponse(desktop_tools.open_path(target))
+                return AssistantResponse(open_path(target))
 
             if lowered.startswith("open website "):
                 target = command[len("open website ") :].strip()
-                result = desktop_tools.open_website(target)    # may raise ActionError
+                result = open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("open downloads"):
-                return AssistantResponse(desktop_tools.open_known_folder("downloads"))
+                return AssistantResponse(open_known_folder("downloads"))
 
             if lowered.startswith("open documents"):
-                return AssistantResponse(desktop_tools.open_known_folder("documents"))
+                return AssistantResponse(open_known_folder("documents"))
 
             if lowered.startswith("open desktop"):
-                return AssistantResponse(desktop_tools.open_known_folder("desktop"))
+                return AssistantResponse(open_known_folder("desktop"))
 
             if lowered.startswith("open pictures") or lowered.startswith("open photos"):
-                return AssistantResponse(desktop_tools.open_known_folder("pictures"))
+                return AssistantResponse(open_known_folder("pictures"))
 
             # ------------------------------------------------------------------
             # Phase 2.5 – Fast website shortcuts (O(1) dict lookup)
@@ -622,41 +667,41 @@ class IRAAssistant:
                 if _target_name in _FAST_WEBSITE_SHORTCUTS:
                     _url = _FAST_WEBSITE_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → website {_url}")
-                    result = desktop_tools.open_website(_url)
+                    result = open_website(_url)
                     _context.set_website(_target_name)
                     return AssistantResponse(result)
                 if _target_name in _FAST_APP_SHORTCUTS:
                     _exe = _FAST_APP_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → app {_exe}")
-                    result = desktop_tools.open_app(_exe)
+                    result = open_app(_exe)
                     _context.set_app(_target_name)
                     return AssistantResponse(result)
 
             if lowered.startswith("search google for "):
                 query = command[len("search google for ") :].strip()
-                return AssistantResponse(desktop_tools.search_web(query))
+                return AssistantResponse(search_web(query))
 
             if lowered.startswith("search for "):
                 query = command[len("search for ") :].strip()
-                return AssistantResponse(desktop_tools.search_web(query))
+                return AssistantResponse(search_web(query))
 
             if lowered.startswith("google "):
                 query = command[len("google ") :].strip()
-                return AssistantResponse(desktop_tools.search_web(query))
+                return AssistantResponse(search_web(query))
 
             if lowered.startswith("find "):
                 query = command[len("find ") :].strip()
-                return AssistantResponse(desktop_tools.search_web(query))
+                return AssistantResponse(search_web(query))
 
             if lowered.startswith("open "):
                 target = command[len("open ") :].strip()
                 if self._looks_like_website(target):
-                    result = desktop_tools.open_website(target)   # may raise ActionError
+                    result = open_website(target)   # may raise ActionError
                     _context.set_website(target)    # only reached on success
                     return AssistantResponse(result)
                 if self._is_known_folder(target):
-                    return AssistantResponse(desktop_tools.open_known_folder(target))
-                result = desktop_tools.open_app(target)           # may raise ActionError
+                    return AssistantResponse(open_known_folder(target))
+                result = open_app(target)           # may raise ActionError
                 _context.set_app(target)            # only reached on success
                 return AssistantResponse(result)
 
@@ -664,7 +709,7 @@ class IRAAssistant:
                 query = command[len("play ") :].strip()
                 if query.lower().endswith(" on youtube"):
                     query = query[: -len(" on youtube")].strip()
-                return AssistantResponse(desktop_tools.play_youtube_search(query))
+                return AssistantResponse(play_youtube_search(query))
 
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)

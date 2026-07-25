@@ -1,21 +1,51 @@
 import re
-import subprocess
-import os
 from .base import Skill
 
 # We need to return the exact type expected by assistant.py handlers
 # which is AssistantResponse. We import it to instantiate it.
 from ..assistant import AssistantResponse
-from ..actions import (
-    lock_screen,
-    shutdown_system,
-    sleep_system,
-    mute_system,
-    volume_up,
-    volume_down,
-    set_brightness,
-    ActionError
-)
+from ..actions import ActionError
+from ..router import default_tool_router
+from ..tools import ToolRequest
+
+
+def _run_system_tool(command: str, **params: object) -> str:
+    result = default_tool_router.execute(ToolRequest("system", command, params))
+    if not result.handled:
+        raise ActionError(result.text)
+    return result.text
+
+
+def lock_screen() -> str:
+    return _run_system_tool("lock_screen")
+
+
+def shutdown_system() -> str:
+    return _run_system_tool("shutdown_system")
+
+
+def sleep_system() -> str:
+    return _run_system_tool("sleep_system")
+
+
+def restart_system() -> str:
+    return _run_system_tool("restart_system")
+
+
+def mute_system() -> str:
+    return _run_system_tool("mute_system")
+
+
+def volume_up() -> str:
+    return _run_system_tool("volume_up")
+
+
+def volume_down() -> str:
+    return _run_system_tool("volume_down")
+
+
+def set_brightness(level: int) -> str:
+    return _run_system_tool("set_brightness", level=level)
 
 class SystemSkill(Skill):
     @property
@@ -70,10 +100,7 @@ class SystemSkill(Skill):
                 "restart", "reboot", "restart computer", "restart the computer",
                 "restart my computer", "restart pc", "restart my pc",
             )):
-                if os.name != "nt":
-                    raise ActionError("Restart is only supported on Windows.")
-                subprocess.run(["shutdown", "/r", "/t", "0"], check=True)
-                return AssistantResponse("Restarting the computer.")
+                return AssistantResponse(restart_system())
 
             if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
                 return AssistantResponse(mute_system())
@@ -99,9 +126,5 @@ class SystemSkill(Skill):
 
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)
-        except subprocess.CalledProcessError:
-            # Handle the specific restart subprocess error identical to assistant.py
-            return AssistantResponse("I could not restart the computer.", handled=False)
-
         # Fallback if matched but no condition triggered (shouldn't happen)
         return AssistantResponse("I could not process the system command.", handled=False)

@@ -24,6 +24,12 @@ class ToolRegistry:
     def discover(self) -> list[Tool]:
         return list(self._tools)
 
+    def get(self, name: str) -> Tool | None:
+        for tool in self._tools:
+            if str(tool.metadata().get("name", tool.__class__.__name__)) == name:
+                return tool
+        return None
+
     def select(self, request: ToolRequest) -> Tool | None:
         for tool in self._tools:
             if tool.supports(request):

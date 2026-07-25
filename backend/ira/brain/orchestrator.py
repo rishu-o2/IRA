@@ -6,6 +6,7 @@ from typing import Protocol
 from .intent import IntentClassifier
 from .models import AssistantResponse, BrainRequest, BrainResult
 from .planner import BrainPlanner
+from ..tools import ToolRequest, ToolResult
 
 SingleStepHandler = Callable[[str], AssistantResponse]
 MultiStepHandler = Callable[[str, object], AssistantResponse]
@@ -16,18 +17,25 @@ class MemoryReader(Protocol):
         ...
 
 
+class ToolExecutor(Protocol):
+    def execute(self, request: ToolRequest) -> ToolResult:
+        ...
+
+
 class BrainOrchestrator:
-    """Coordinates intent and planning while legacy handlers execute behavior."""
+    """Coordinates intent, planning, memory, and the tool execution boundary."""
 
     def __init__(
         self,
         planner: BrainPlanner,
         intent_classifier: IntentClassifier | None = None,
         memory: MemoryReader | None = None,
+        tool_router: ToolExecutor | None = None,
     ) -> None:
         self._planner = planner
         self._intent_classifier = intent_classifier or IntentClassifier()
         self._memory = memory
+        self._tool_router = tool_router
 
     def process(
         self,
@@ -45,6 +53,11 @@ class BrainOrchestrator:
             response = run_single_step(request.message)
 
         return BrainResult(response=response, intent=intent, plan=plan)
+
+    def execute_tool(self, request: ToolRequest) -> ToolResult:
+        if self._tool_router is None:
+            return ToolResult("No tool router is configured.", handled=False)
+        return self._tool_router.execute(request)
 
     def _resolve_memory_references(self, request: BrainRequest) -> BrainRequest:
         if self._memory is None:
