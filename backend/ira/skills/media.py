@@ -8,8 +8,6 @@ implemented as private helpers using the same Win32 ctypes.keybd_event
 pattern already used in ira.actions for volume/mute.
 """
 
-import ctypes
-import os
 from .base import Skill
 from ..assistant import AssistantResponse
 from ..actions import ActionError
@@ -44,63 +42,7 @@ def play_youtube_search(query: str) -> str:
         raise ActionError(result.text)
     return result.text
 
-# ---------------------------------------------------------------------------
-# Private Win32 media-key helpers
-# ---------------------------------------------------------------------------
-_KEYEVENTF_EXTENDEDKEY: int = 0x0001
-_KEYEVENTF_KEYUP:       int = 0x0002
 
-# Virtual-key codes for media keys
-_VK_MEDIA_PLAY_PAUSE: int = 0xB3
-_VK_MEDIA_NEXT_TRACK: int = 0xB0
-_VK_MEDIA_PREV_TRACK: int = 0xB1
-_VK_MEDIA_STOP:       int = 0xB2
-
-
-def _send_media_key(vk: int) -> None:
-    """Press and release a single extended virtual key."""
-    ctypes.windll.user32.keybd_event(vk, 0, _KEYEVENTF_EXTENDEDKEY, 0)
-    ctypes.windll.user32.keybd_event(vk, 0, _KEYEVENTF_EXTENDEDKEY | _KEYEVENTF_KEYUP, 0)
-
-
-def _play_pause_media() -> str:
-    if os.name != "nt":
-        raise ActionError("Media play/pause is only supported on Windows.")
-    try:
-        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
-    except Exception as exc:
-        raise ActionError("I could not toggle media playback.") from exc
-    return "Toggling media playback."
-
-
-def _next_track() -> str:
-    if os.name != "nt":
-        raise ActionError("Next track is only supported on Windows.")
-    try:
-        _send_media_key(_VK_MEDIA_NEXT_TRACK)
-    except Exception as exc:
-        raise ActionError("I could not skip to the next track.") from exc
-    return "Skipping to the next track."
-
-
-def _previous_track() -> str:
-    if os.name != "nt":
-        raise ActionError("Previous track is only supported on Windows.")
-    try:
-        _send_media_key(_VK_MEDIA_PREV_TRACK)
-    except Exception as exc:
-        raise ActionError("I could not go to the previous track.") from exc
-    return "Going to the previous track."
-
-
-def _stop_media() -> str:
-    if os.name != "nt":
-        raise ActionError("Media stop is only supported on Windows.")
-    try:
-        _send_media_key(_VK_MEDIA_STOP)
-    except Exception as exc:
-        raise ActionError("I could not stop media playback.") from exc
-    return "Stopping media playback."
 
 
 # ---------------------------------------------------------------------------
@@ -244,25 +186,35 @@ class MediaSkill(Skill):
 
             # Next / previous
             if low in _NEXT_PHRASES:
-                return AssistantResponse(_next_track())
+                res = default_tool_router.execute(ToolRequest("media", "next_track"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
             if low in _PREV_PHRASES:
-                return AssistantResponse(_previous_track())
+                res = default_tool_router.execute(ToolRequest("media", "previous_track"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
             # Stop
             if low in _STOP_PHRASES or any(low.startswith(p) for p in _STOP_PREFIXES):
-                return AssistantResponse(_stop_media())
+                res = default_tool_router.execute(ToolRequest("media", "stop"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
             # Pause
             if low in _PAUSE_PHRASES or any(low.startswith(p) for p in _PAUSE_PREFIXES):
-                return AssistantResponse(_play_pause_media())
+                res = default_tool_router.execute(ToolRequest("media", "play_pause"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
             # Play / resume (catch-all after above)
             if low in _PLAY_PHRASES or any(low.startswith(p) for p in _PLAY_PREFIXES):
                 if low.startswith("play ") and low.endswith(" on youtube"):
                     query = command[len("play ") : -len(" on youtube")].strip()
                     return AssistantResponse(play_youtube_search(query))
-                return AssistantResponse(_play_pause_media())
+                res = default_tool_router.execute(ToolRequest("media", "play_pause"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)

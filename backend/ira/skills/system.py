@@ -44,6 +44,12 @@ def volume_down() -> str:
     return _run_system_tool("volume_down")
 
 
+def get_battery_status() -> str:
+    return _run_system_tool("get_battery_status")
+
+def get_system_stats() -> str:
+    return _run_system_tool("get_system_stats")
+
 def set_brightness(level: int) -> str:
     return _run_system_tool("set_brightness", level=level)
 
@@ -75,6 +81,10 @@ class SystemSkill(Skill):
         if lowered.startswith(("volume down", "decrease volume", "quieter", "make it quieter")):
             return True
         if "brightness" in lowered:
+            return True
+        if lowered.startswith(("battery", "check battery", "battery status", "how is the battery")):
+            return True
+        if lowered.startswith(("system stats", "check system stats", "resource usage", "cpu usage", "performance stats")):
             return True
         return False
 
@@ -123,6 +133,12 @@ class SystemSkill(Skill):
                     return AssistantResponse(set_brightness(80))
                 if "down" in lowered or "decrease" in lowered or "dimmer" in lowered:
                     return AssistantResponse(set_brightness(30))
+
+            if lowered.startswith(("battery", "check battery", "battery status", "how is the battery")):
+                return AssistantResponse(get_battery_status())
+
+            if lowered.startswith(("system stats", "check system stats", "resource usage", "cpu usage", "performance stats")):
+                return AssistantResponse(get_system_stats())
 
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)

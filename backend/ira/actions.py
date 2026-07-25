@@ -326,3 +326,135 @@ def get_system_stats() -> str:
         pass
     return f"CPU usage is at {cpu}%, and RAM memory usage is at {ram}%.{battery_info}"
 
+
+# ---------------------------------------------------------------------------
+# Browser and Media Keyboard Actions (Migrated from Skills)
+# ---------------------------------------------------------------------------
+
+_KEYEVENTF_EXTENDEDKEY: int = 0x0001
+_KEYEVENTF_KEYUP:       int = 0x0002
+
+_VK = {
+    "F5":       0x74,
+    "BROWSER_BACK":    0xA6,
+    "BROWSER_FORWARD": 0xA7,
+    "t":        0x54,
+    "w":        0x57,
+    "T":        0x54,
+    "MEDIA_PLAY_PAUSE": 0xB3,
+    "MEDIA_NEXT_TRACK": 0xB0,
+    "MEDIA_PREV_TRACK": 0xB1,
+    "MEDIA_STOP":       0xB2,
+}
+
+def _key_down(vk: int, extended: bool = False) -> None:
+    flags = _KEYEVENTF_EXTENDEDKEY if extended else 0
+    ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
+
+def _key_up(vk: int, extended: bool = False) -> None:
+    flags = (_KEYEVENTF_EXTENDEDKEY if extended else 0) | _KEYEVENTF_KEYUP
+    ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
+
+def _send_key(vk: int, ctrl: bool = False, shift: bool = False, extended: bool = False) -> None:
+    VK_CONTROL = 0x11
+    VK_SHIFT   = 0x10
+    if ctrl:
+        _key_down(VK_CONTROL)
+    if shift:
+        _key_down(VK_SHIFT)
+    _key_down(vk, extended)
+    _key_up(vk, extended)
+    if shift:
+        _key_up(VK_SHIFT)
+    if ctrl:
+        _key_up(VK_CONTROL)
+
+def refresh_browser() -> str:
+    if os.name != "nt":
+        raise ActionError("Browser refresh is only supported on Windows.")
+    try:
+        _send_key(_VK["F5"])
+    except Exception as exc:
+        raise ActionError("I could not refresh the browser.") from exc
+    return "Refreshing the browser."
+
+def go_back() -> str:
+    if os.name != "nt":
+        raise ActionError("Browser back is only supported on Windows.")
+    try:
+        _send_key(_VK["BROWSER_BACK"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not go back in the browser.") from exc
+    return "Going back."
+
+def go_forward() -> str:
+    if os.name != "nt":
+        raise ActionError("Browser forward is only supported on Windows.")
+    try:
+        _send_key(_VK["BROWSER_FORWARD"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not go forward in the browser.") from exc
+    return "Going forward."
+
+def open_new_tab() -> str:
+    if os.name != "nt":
+        raise ActionError("Open new tab is only supported on Windows.")
+    try:
+        _send_key(_VK["t"], ctrl=True)
+    except Exception as exc:
+        raise ActionError("I could not open a new tab.") from exc
+    return "Opening a new tab."
+
+def close_tab() -> str:
+    if os.name != "nt":
+        raise ActionError("Close tab is only supported on Windows.")
+    try:
+        _send_key(_VK["w"], ctrl=True)
+    except Exception as exc:
+        raise ActionError("I could not close the tab.") from exc
+    return "Closing the current tab."
+
+def reopen_tab() -> str:
+    if os.name != "nt":
+        raise ActionError("Reopen tab is only supported on Windows.")
+    try:
+        _send_key(_VK["T"], ctrl=True, shift=True)
+    except Exception as exc:
+        raise ActionError("I could not reopen the last closed tab.") from exc
+    return "Reopening the last closed tab."
+
+def play_pause_media() -> str:
+    if os.name != "nt":
+        raise ActionError("Media play/pause is only supported on Windows.")
+    try:
+        _send_key(_VK["MEDIA_PLAY_PAUSE"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not toggle media playback.") from exc
+    return "Toggling media playback."
+
+def next_track() -> str:
+    if os.name != "nt":
+        raise ActionError("Next track is only supported on Windows.")
+    try:
+        _send_key(_VK["MEDIA_NEXT_TRACK"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not skip to the next track.") from exc
+    return "Skipping to the next track."
+
+def previous_track() -> str:
+    if os.name != "nt":
+        raise ActionError("Previous track is only supported on Windows.")
+    try:
+        _send_key(_VK["MEDIA_PREV_TRACK"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not go to the previous track.") from exc
+    return "Going to the previous track."
+
+def stop_media() -> str:
+    if os.name != "nt":
+        raise ActionError("Media stop is only supported on Windows.")
+    try:
+        _send_key(_VK["MEDIA_STOP"], extended=True)
+    except Exception as exc:
+        raise ActionError("I could not stop media playback.") from exc
+    return "Stopping media playback."

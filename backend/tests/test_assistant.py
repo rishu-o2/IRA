@@ -193,8 +193,8 @@ def test_brightness_control(monkeypatch) -> None:
 
 
 def test_battery_and_system_stats(monkeypatch) -> None:
-    monkeypatch.setattr("ira.assistant.get_battery_status", lambda: "Battery is at 88%, and is currently charging.")
-    monkeypatch.setattr("ira.assistant.get_system_stats", lambda: "CPU usage is at 12.5%, and RAM memory usage is at 45.2%. Battery is at 88%, and is currently charging.")
+    monkeypatch.setattr("ira.actions.get_battery_status", lambda: "Battery is at 88%, and is currently charging.")
+    monkeypatch.setattr("ira.actions.get_system_stats", lambda: "CPU usage is at 12.5%, and RAM memory usage is at 45.2%. Battery is at 88%, and is currently charging.")
     
     assistant = IRAAssistant()
     
@@ -475,8 +475,8 @@ def test_memory_suggestion_does_not_execute_actions(monkeypatch) -> None:
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.assistant.open_app", lambda name: calls.append(name) or "opened")
-    monkeypatch.setattr("ira.assistant.open_website", lambda target: calls.append(target) or "opened")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or "opened")
+    monkeypatch.setattr("ira.actions.open_website", lambda target: calls.append(target) or "opened")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     response = assistant.handle("My favorite editor is VS Code.")
@@ -490,7 +490,7 @@ def test_editor_preference_routes_generic_editor_command(monkeypatch) -> None:
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     assistant.handle("remember my favorite editor is VS Code.")
@@ -506,7 +506,7 @@ def test_browser_preference_routes_generic_browser_command(monkeypatch) -> None:
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     assistant.handle("remember my favorite browser is Chrome.")
@@ -522,7 +522,7 @@ def test_terminal_preference_routes_generic_terminal_command(monkeypatch) -> Non
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     assistant.handle("remember my favorite terminal is PowerShell.")
@@ -539,8 +539,8 @@ def test_music_player_preference_opens_player_then_continues_media_flow(monkeypa
     _memory_store.clear()
     app_calls: list[str] = []
     media_calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: app_calls.append(name) or f"Opening {name}")
-    monkeypatch.setattr("ira.skills.media._play_pause_media", lambda: media_calls.append("play") or "Toggling media playback.")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: app_calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.play_pause_media", lambda: media_calls.append("play") or "Toggling media playback.")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     assistant.handle("remember my favorite music player is Spotify.")
@@ -558,7 +558,7 @@ def test_missing_editor_preference_keeps_existing_skill_fallback(monkeypatch) ->
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     response = assistant.handle("open editor")
@@ -573,7 +573,7 @@ def test_existing_specific_app_skill_routing_is_unchanged(monkeypatch) -> None:
 
     _memory_store.clear()
     calls: list[str] = []
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
     assistant = IRAAssistant(conversation=FakeConversation("API reply"))
 
     response = assistant.handle("open notepad")
@@ -598,8 +598,8 @@ def test_preference_routing_uses_context_retriever_only(monkeypatch) -> None:
         retrieve_queries.append(query)
         return Context((memory,))
 
-    monkeypatch.setattr("ira.assistant._context_retriever.retrieve", fake_retrieve)
-    monkeypatch.setattr("ira.skills.app.open_app", lambda name: calls.append(name) or f"Opening {name}")
+    monkeypatch.setattr("ira.session.context_retriever.retrieve", fake_retrieve)
+    monkeypatch.setattr("ira.actions.open_app", lambda name: calls.append(name) or f"Opening {name}")
 
     response = assistant.handle("open my editor")
 

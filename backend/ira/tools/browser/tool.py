@@ -45,28 +45,22 @@ class BrowserTool:
         return actions.search_web(query)
 
     def refresh(self) -> str:
-        from ...skills.browser import refresh_browser
-        return refresh_browser()
+        return actions.refresh_browser()
 
     def back(self) -> str:
-        from ...skills.browser import go_back
-        return go_back()
+        return actions.go_back()
 
     def forward(self) -> str:
-        from ...skills.browser import go_forward
-        return go_forward()
+        return actions.go_forward()
 
     def new_tab(self) -> str:
-        from ...skills.browser import open_new_tab
-        return open_new_tab()
+        return actions.open_new_tab()
 
     def close_tab(self) -> str:
-        from ...skills.browser import close_tab
-        return close_tab()
+        return actions.close_tab()
 
     def reopen_tab(self) -> str:
-        from ...skills.browser import reopen_tab
-        return reopen_tab()
+        return actions.reopen_tab()
 
 
 browser_tool = BrowserTool()

@@ -63,7 +63,12 @@ def _strip_verb(command: str) -> str:
     """Remove a leading launch verb from the command, if present."""
     parts = command.split(maxsplit=1)
     if parts and parts[0].lower() in _VERBS:
-        return parts[1] if len(parts) > 1 else ""
+        target = parts[1] if len(parts) > 1 else ""
+        if target.lower().startswith("application "):
+            target = target[len("application "):].strip()
+        elif target.lower().startswith("app "):
+            target = target[len("app "):].strip()
+        return target
     return command
 
 
@@ -90,6 +95,11 @@ class AppSkill(Skill):
             return False
 
         target = parts[1].strip() if len(parts) > 1 else ""
+        if target.startswith("application "):
+            target = target[len("application "):].strip()
+        elif target.startswith("app "):
+            target = target[len("app "):].strip()
+
         if not target:
             return False
 

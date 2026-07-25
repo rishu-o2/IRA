@@ -9,8 +9,6 @@ same ctypes keybd_event pattern already used by ira.actions for volume
 keys, so no new dependency is introduced.
 """
 
-import ctypes
-import os
 from .base import Skill
 from ..assistant import AssistantResponse
 from ..actions import ActionError
@@ -68,102 +66,7 @@ _SEARCH_ALIASES: dict[str, str] = {
     "find": "search for",
 }
 
-# ---------------------------------------------------------------------------
-# Low-level browser shortcut keys (ctypes, same pattern as ira.actions volume)
-# ---------------------------------------------------------------------------
-_KEYEVENTF_EXTENDEDKEY: int = 0x0001
-_KEYEVENTF_KEYUP:       int = 0x0002
 
-_VK = {
-    "F5":       0x74,   # refresh
-    "BROWSER_BACK":    0xA6,
-    "BROWSER_FORWARD": 0xA7,
-    "t":        0x54,
-    "w":        0x57,
-    "T":        0x54,   # Ctrl+Shift+T
-}
-
-def _key_down(vk: int, extended: bool = False) -> None:
-    flags = _KEYEVENTF_EXTENDEDKEY if extended else 0
-    ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
-
-def _key_up(vk: int, extended: bool = False) -> None:
-    flags = (_KEYEVENTF_EXTENDEDKEY if extended else 0) | _KEYEVENTF_KEYUP
-    ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
-
-def _send_key(vk: int, ctrl: bool = False, shift: bool = False, extended: bool = False) -> None:
-    VK_CONTROL = 0x11
-    VK_SHIFT   = 0x10
-    if ctrl:
-        _key_down(VK_CONTROL)
-    if shift:
-        _key_down(VK_SHIFT)
-    _key_down(vk, extended)
-    _key_up(vk, extended)
-    if shift:
-        _key_up(VK_SHIFT)
-    if ctrl:
-        _key_up(VK_CONTROL)
-
-
-def refresh_browser() -> str:
-    if os.name != "nt":
-        raise ActionError("Browser refresh is only supported on Windows.")
-    try:
-        _send_key(_VK["F5"])
-    except Exception as exc:
-        raise ActionError("I could not refresh the browser.") from exc
-    return "Refreshing the browser."
-
-
-def go_back() -> str:
-    if os.name != "nt":
-        raise ActionError("Browser back is only supported on Windows.")
-    try:
-        _send_key(_VK["BROWSER_BACK"], extended=True)
-    except Exception as exc:
-        raise ActionError("I could not go back in the browser.") from exc
-    return "Going back."
-
-
-def go_forward() -> str:
-    if os.name != "nt":
-        raise ActionError("Browser forward is only supported on Windows.")
-    try:
-        _send_key(_VK["BROWSER_FORWARD"], extended=True)
-    except Exception as exc:
-        raise ActionError("I could not go forward in the browser.") from exc
-    return "Going forward."
-
-
-def open_new_tab() -> str:
-    if os.name != "nt":
-        raise ActionError("Open new tab is only supported on Windows.")
-    try:
-        _send_key(_VK["t"], ctrl=True)
-    except Exception as exc:
-        raise ActionError("I could not open a new tab.") from exc
-    return "Opening a new tab."
-
-
-def close_tab() -> str:
-    if os.name != "nt":
-        raise ActionError("Close tab is only supported on Windows.")
-    try:
-        _send_key(_VK["w"], ctrl=True)
-    except Exception as exc:
-        raise ActionError("I could not close the tab.") from exc
-    return "Closing the current tab."
-
-
-def reopen_tab() -> str:
-    if os.name != "nt":
-        raise ActionError("Reopen tab is only supported on Windows.")
-    try:
-        _send_key(_VK["T"], ctrl=True, shift=True)
-    except Exception as exc:
-        raise ActionError("I could not reopen the last closed tab.") from exc
-    return "Reopening the last closed tab."
 
 
 # ---------------------------------------------------------------------------
@@ -263,17 +166,29 @@ class BrowserSkill(Skill):
         try:
             # --- Browser controls ---
             if lowered in _REFRESH_PHRASES:
-                return AssistantResponse(refresh_browser())
+                res = default_tool_router.execute(ToolRequest("browser", "refresh"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
             if lowered in _BACK_PHRASES:
-                return AssistantResponse(go_back())
+                res = default_tool_router.execute(ToolRequest("browser", "back"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
             if lowered in _FORWARD_PHRASES:
-                return AssistantResponse(go_forward())
+                res = default_tool_router.execute(ToolRequest("browser", "forward"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
             if lowered in _NEW_TAB_PHRASES:
-                return AssistantResponse(open_new_tab())
+                res = default_tool_router.execute(ToolRequest("browser", "new_tab"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
             if lowered in _CLOSE_TAB_PHRASES:
-                return AssistantResponse(close_tab())
+                res = default_tool_router.execute(ToolRequest("browser", "close_tab"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
             if lowered in _REOPEN_TAB_PHRASES:
-                return AssistantResponse(reopen_tab())
+                res = default_tool_router.execute(ToolRequest("browser", "reopen_tab"))
+                if not res.handled: raise ActionError(res.text)
+                return AssistantResponse(res.text)
 
             # --- Website opening ---
             for prefix in _WEBSITE_OPEN_PREFIXES:

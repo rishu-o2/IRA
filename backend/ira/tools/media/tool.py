@@ -36,20 +36,16 @@ class MediaTool:
         }
 
     def play_pause(self) -> str:
-        from ...skills.media import _play_pause_media
-        return _play_pause_media()
+        return actions.play_pause_media()
 
     def next_track(self) -> str:
-        from ...skills.media import _next_track
-        return _next_track()
+        return actions.next_track()
 
     def previous_track(self) -> str:
-        from ...skills.media import _previous_track
-        return _previous_track()
+        return actions.previous_track()
 
     def stop(self) -> str:
-        from ...skills.media import _stop_media
-        return _stop_media()
+        return actions.stop_media()
 
     def play_youtube_search(self, query: str) -> str:
         return actions.play_youtube_search(query)
