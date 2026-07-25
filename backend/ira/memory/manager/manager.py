@@ -1,79 +1,102 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
-from ..long_term import MemoryEntry, MemoryStore
-
-from .extractor import MemoryExtractor
-from .rules import MemoryRules
+from ...storage import SQLiteStorage
+from ..models import MemoryRecord
 
 
 class MemoryManager:
-    def __init__(
-        self,
-        store: MemoryStore,
-        extractor: MemoryExtractor | None = None,
-        rules: MemoryRules | None = None,
-    ) -> None:
-        self.store = store
-        self.rules = rules or MemoryRules()
-        self.extractor = extractor or MemoryExtractor(self.rules)
+    def __init__(self, database_path: str | Path | None = None, storage: SQLiteStorage | None = None) -> None:
+        self.storage = storage or SQLiteStorage(database_path)
 
-    def remember(self, text: str) -> list[MemoryEntry]:
-        remembered: list[MemoryEntry] = []
-        for candidate in self.extract(text):
-            existing = self._find_existing(candidate)
-            if existing is None:
-                self.store.add(candidate)
-                remembered.append(candidate)
-            elif self._changed(existing, candidate):
-                existing.content = candidate.content
-                existing.type = candidate.type
-                existing.metadata = candidate.metadata
-                existing.updated_at = datetime.now(timezone.utc)
-                self.store.add(existing)
-                remembered.append(existing)
-        return remembered
+    def remember(self, key: str, value: str, category: str) -> MemoryRecord:
+        clean_key = self._clean("key", key)
+        clean_value = self._clean("value", value)
+        clean_category = self._clean("category", category)
+        now = datetime.now(timezone.utc).isoformat()
 
-    def forget(self, query: str) -> list[MemoryEntry]:
-        if not query.strip():
+        with self.storage.connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM memories WHERE key = ?",
+                (clean_key,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+            connection.execute(
+                """
+                INSERT INTO memories(key, value, category, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    category = excluded.category,
+                    updated_at = excluded.updated_at
+                """,
+                (clean_key, clean_value, clean_category, created_at, now),
+            )
+            connection.commit()
+
+        recalled = self._get_record(clean_key)
+        if recalled is None:
+            raise RuntimeError(f"Memory was not persisted: {clean_key}")
+        return recalled
+
+    def recall(self, key: str) -> str | None:
+        clean_key = key.strip()
+        if not clean_key:
+            return None
+        record = self._get_record(clean_key)
+        return record.value if record is not None else None
+
+    def search(self, query: str) -> list[MemoryRecord]:
+        clean_query = query.strip()
+        if not clean_query:
             return []
+        like_query = f"%{clean_query}%"
+        with self.storage.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT key, value, category, created_at, updated_at
+                FROM memories
+                WHERE key LIKE ? OR value LIKE ? OR category LIKE ?
+                ORDER BY updated_at DESC, key ASC
+                """,
+                (like_query, like_query, like_query),
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
 
-        removed: list[MemoryEntry] = []
-        normalized_query = self.rules.normalize(query)
-        for entry in list(self.store.all()):
-            haystack = " ".join(
-                [
-                    entry.content,
-                    str(entry.metadata.get("category", "")),
-                    str(entry.metadata.get("key", "")),
-                    str(entry.metadata.get("value", "")),
-                ]
-            ).casefold()
-            natural_haystack = self.rules.normalize(haystack.replace("_", " "))
-            if normalized_query in haystack or normalized_query in natural_haystack:
-                self.store.remove(entry.id)
-                removed.append(entry)
-        return removed
+    def forget(self, key: str) -> bool:
+        clean_key = key.strip()
+        if not clean_key:
+            return False
+        with self.storage.connect() as connection:
+            cursor = connection.execute("DELETE FROM memories WHERE key = ?", (clean_key,))
+            connection.commit()
+            return cursor.rowcount > 0
 
-    def should_remember(self, text: str) -> bool:
-        return self.rules.should_remember(text)
+    def _get_record(self, key: str) -> MemoryRecord | None:
+        with self.storage.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT key, value, category, created_at, updated_at
+                FROM memories
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+        return self._row_to_record(row) if row is not None else None
 
-    def extract(self, text: str) -> list[MemoryEntry]:
-        return self.extractor.extract(text)
-
-    def _find_existing(self, candidate: MemoryEntry) -> MemoryEntry | None:
-        candidate_key = candidate.metadata.get("key")
-        for entry in self.store.all():
-            if entry.metadata.get("key") == candidate_key:
-                return entry
-            if entry.content.casefold() == candidate.content.casefold():
-                return entry
-        return None
-
-    def _changed(self, existing: MemoryEntry, candidate: MemoryEntry) -> bool:
-        return (
-            existing.content != candidate.content
-            or existing.type != candidate.type
-            or existing.metadata != candidate.metadata
+    def _row_to_record(self, row) -> MemoryRecord:
+        return MemoryRecord(
+            key=row["key"],
+            value=row["value"],
+            category=row["category"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
         )
+
+    def _clean(self, field: str, value: str) -> str:
+        clean_value = value.strip()
+        if not clean_value:
+            raise ValueError(f"Memory {field} cannot be empty.")
+        return clean_value

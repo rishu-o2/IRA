@@ -12,7 +12,8 @@ import ctypes
 import os
 from .base import Skill
 from ..assistant import AssistantResponse
-from ..actions import mute_system, volume_up, volume_down, ActionError
+from ..actions import ActionError
+from ..tools import desktop_tools
 
 # ---------------------------------------------------------------------------
 # Private Win32 media-key helpers
@@ -201,16 +202,16 @@ class MediaSkill(Skill):
         try:
             # Volume – delegate to ira.actions
             if low in _MUTE_PHRASES:
-                return AssistantResponse(mute_system())
+                return AssistantResponse(desktop_tools.mute_system())
 
             if low in _UNMUTE_PHRASES:
-                return AssistantResponse(mute_system())  # toggle
+                return AssistantResponse(desktop_tools.mute_system())  # toggle
 
             if low in _VOLUME_UP_PHRASES:
-                return AssistantResponse(volume_up())
+                return AssistantResponse(desktop_tools.volume_up())
 
             if low in _VOLUME_DOWN_PHRASES:
-                return AssistantResponse(volume_down())
+                return AssistantResponse(desktop_tools.volume_down())
 
             # Next / previous
             if low in _NEXT_PHRASES:
@@ -229,6 +230,9 @@ class MediaSkill(Skill):
 
             # Play / resume (catch-all after above)
             if low in _PLAY_PHRASES or any(low.startswith(p) for p in _PLAY_PREFIXES):
+                if low.startswith("play ") and low.endswith(" on youtube"):
+                    query = command[len("play ") : -len(" on youtube")].strip()
+                    return AssistantResponse(desktop_tools.play_youtube_search(query))
                 return AssistantResponse(_play_pause_media())
 
         except ActionError as exc:

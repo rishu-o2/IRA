@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import wave
-import io
 import time
-import wave
 import logging
 import speech_recognition as sr
 import os
+import importlib
 
 # Configure logging
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -252,7 +251,7 @@ def record_via_sounddevice(duration: float = 10.0, sample_rate: int = 16000) -> 
         return None
 
 
-def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) -> str | None:
+def transcribe_voice_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) -> str | None:
     """Listens using speech_recognition and transcribes using Google Cloud Speech API.
     Tries the PyAudio microphone first; if unavailable, falls back to sounddevice.
     """
@@ -371,21 +370,21 @@ def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) ->
 
 class VoiceAssistant:
     def __init__(self) -> None:
-        self.speech_enabled = True  # Enable speech by default; we'll handle missing deps gracefully
+        self.speech_enabled = False
         self.tts_enabled = False
         
-        # Attempt to import optional sounddevice and numpy for advanced features
+        # Resolve runtime voice dependencies here so tests and CLI agree on one source of truth.
         try:
+            speech_recognition = importlib.import_module("speech_recognition")
             import numpy as np
             import sounddevice as sd
+            self.sr = speech_recognition
             self.np = np
             self.sd = sd
+            self.recognizer = self.sr.Recognizer()
+            self.speech_enabled = True
         except Exception as e:
-            logger.info(f"Optional audio libraries not available: {e}. Continuing without them.")
-        
-        # speech_recognition is required for basic listening; it's already installed
-        self.sr = sr
-        self.recognizer = sr.Recognizer()
+            logger.info(f"Speech recognition dependencies are not available: {e}.")
         
         # Attempt to initialize pyttsx3 for TTS
         try:
@@ -436,8 +435,13 @@ class VoiceAssistant:
             logger.error(f"Error in TTS speak: {e}")
 
     def listen(self, timeout: float = 6.0, phrase_time_limit: float = 10.0) -> str | None:
-        """Listens using speech_recognition and transcribes via Google Cloud Speech API."""
+        """Return one transcript from the shared voice command path."""
         if not self.speech_enabled:
             print("Speech recognition is disabled. Ensure speechrecognition, sounddevice, and numpy are installed.")
             return None
         return listen_for_command(timeout=timeout, phrase_time_limit=phrase_time_limit)
+
+
+def listen_for_command(timeout: float = 6.0, phrase_time_limit: float = 10.0) -> str | None:
+    """Single public voice transcript path used by CLI, server, and VoiceAssistant."""
+    return transcribe_voice_command(timeout=timeout, phrase_time_limit=phrase_time_limit)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 import time
 from datetime import datetime
-from dataclasses import dataclass
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -54,35 +53,25 @@ _FAST_APP_SHORTCUTS: dict[str, str] = {
     "outlook":         "outlook",
 }
 
-from .actions import (
-    ActionError,
-    lock_screen,
-    mute_system,
-    open_app,
-    open_known_folder,
-    open_path,
-    open_website,
-    play_youtube_search,
-    search_web,
-    shutdown_system,
-    sleep_system,
-    volume_up,
-    volume_down,
-    set_brightness,
-    get_battery_status,
-    get_system_stats,
-)
+from .actions import ActionError
+from .brain import AssistantResponse, BrainOrchestrator, BrainPlanner, BrainRequest
 from .conversation import ConversationError, GeminiConversation
 from .memory.context import ContextManager
 from .memory.consolidation import MemoryConsolidator
 from .memory.long_term import MemoryStore, MemoryType
 from .memory.long_term.storage import MemoryStorage
-from .memory.manager import MemoryManager
+from .memory.manager import LegacyMemoryManager, MemoryManager
 from .memory.retrieval import Context, ContextRetriever
 from .planner.planner import TaskPlanner
 from .execution.executor import TaskExecutor
 from .goals.manager import GoalManager
 from .suggestions import ProactiveSuggestionEngine
+from .tools import desktop_tools
+
+open_app = desktop_tools.open_app
+open_website = desktop_tools.open_website
+get_battery_status = desktop_tools.get_battery_status
+get_system_stats = desktop_tools.get_system_stats
 
 # ---------------------------------------------------------------------------
 # Phase 6 – Mobile Companion Server
@@ -117,7 +106,8 @@ _context: ContextManager = ContextManager()
 _memory_store: MemoryStore = MemoryStore(
     MemoryStorage(str(Path(__file__).resolve().parent / "memory" / "long_term" / "memories.json"))
 )
-_memory_manager: MemoryManager = MemoryManager(_memory_store)
+_memory_manager: LegacyMemoryManager = LegacyMemoryManager(_memory_store)
+_persistent_memory_manager: MemoryManager = MemoryManager()
 _context_retriever: ContextRetriever = ContextRetriever(_memory_store)
 _memory_consolidator: MemoryConsolidator = MemoryConsolidator()
 _suggestion_engine: ProactiveSuggestionEngine = ProactiveSuggestionEngine()
@@ -168,12 +158,6 @@ def get_all_goals():
 def get_goal_manager():
     return _goal_manager
 
-
-@dataclass(frozen=True)
-class AssistantResponse:
-    text: str
-    handled: bool = True
-
 # ---------------------------------------------------------------------------
 # Phase 7.6 – Skill Framework registration
 # ---------------------------------------------------------------------------
@@ -195,12 +179,24 @@ _PREFERENCE_TARGETS: dict[str, dict[str, object]] = {
         "commands": {"open my editor", "open editor", "launch my editor", "launch editor", "start my editor", "start editor"},
         "skill": "app",
         "template": "open {target}",
+        "aliases": {
+            "vs code": "code",
+            "vscode": "code",
+            "visual studio code": "code",
+        },
     },
     "browser": {
         "keys": ("favorite_browser",),
         "commands": {"open my browser", "open browser", "launch my browser", "launch browser", "start my browser", "start browser"},
         "skill": "app",
         "template": "open {target}",
+        "aliases": {
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "firefox": "firefox",
+            "edge": "edge",
+            "microsoft edge": "edge",
+        },
     },
     "terminal": {
         "keys": ("favorite_terminal",),
@@ -214,6 +210,9 @@ _PREFERENCE_TARGETS: dict[str, dict[str, object]] = {
         "skill": "media",
         "template": "play music",
         "open_template": "open {target}",
+        "aliases": {
+            "spotify": "spotify",
+        },
     },
 }
 
@@ -247,6 +246,7 @@ class IRAAssistant:
         self.modification_history = []
         self._memory_context: Context = Context(())
         self._llm_time: float = 0.0  # seconds; set by _handle_internal when LLM is called
+        self.brain = BrainOrchestrator(BrainPlanner(_agent_planner))
 
         # Wrapper to translate unhandled responses into exceptions for the executor
         def _exec_handler(cmd: str):
@@ -280,13 +280,12 @@ class IRAAssistant:
         _context.remember_user(message)
 
         goal = _goal_manager.create(message)
-        plan = _agent_planner.plan(message)
 
-        if len(plan.steps) <= 1:
+        def run_single_step(current_message: str) -> AssistantResponse:
             _goal_manager.start(goal.id)
             self._llm_time = 0.0
             t_start = time.perf_counter()
-            response = self._handle_internal(message)
+            response = self._handle_internal(current_message)
             t_end   = time.perf_counter()
 
             total_ms  = (t_end - t_start) * 1000
@@ -303,22 +302,23 @@ class IRAAssistant:
 
             # --- memory: record assistant turn ---
             _context.remember_assistant(response.text)
-            _learn_from_long_term_memory(message, response.handled)
+            _learn_from_long_term_memory(current_message, response.handled)
 
             return response
-        else:
+
+        def run_multi_step(current_message: str, plan: object) -> AssistantResponse:
             _goal_manager.start(goal.id)
             
             global _agent_results
             _agent_results.clear()
             
-            plan = _agent_executor.execute(plan)
+            executed_plan = _agent_executor.execute(plan)
             
             results = []
             overall_handled = True
             
             from .agent.step import StepStatus
-            for step in plan.all():
+            for step in executed_plan.all():
                 if step.status == StepStatus.FAILED:
                     results.append(f"✗ {step.error}")
                     overall_handled = False
@@ -328,8 +328,8 @@ class IRAAssistant:
                     res_text = _agent_results.get(step.action, "")
                     results.append(f"✓ {res_text}")
             
-            if plan.failed():
-                failed_msgs = [str(s.error) for s in plan.failed()]
+            if executed_plan.failed():
+                failed_msgs = [str(s.error) for s in executed_plan.failed()]
                 _goal_manager.fail(goal.id, "; ".join(failed_msgs))
             else:
                 _goal_manager.complete(goal.id)
@@ -339,9 +339,16 @@ class IRAAssistant:
             
             # --- memory: record assistant turn ---
             _context.remember_assistant(combined_response.text)
-            _learn_from_long_term_memory(message, combined_response.handled)
+            _learn_from_long_term_memory(current_message, combined_response.handled)
             
             return combined_response
+
+        brain_result = self.brain.process(
+            BrainRequest(message),
+            run_single_step=run_single_step,
+            run_multi_step=run_multi_step,
+        )
+        return brain_result.response
 
     def _handle_internal(self, message: str) -> AssistantResponse:
         command = self._normalize_command(message)
@@ -367,6 +374,24 @@ class IRAAssistant:
         memory_statement = self._handle_memory_statement(command)
         if memory_statement is not None:
             return memory_statement
+
+        if lowered in {
+            "date",
+            "what date is it",
+            "open ira",
+            "wake ira",
+            "wake up ira",
+            "activate ira",
+            "ira",
+            "open my laptop",
+            "wake my laptop",
+            "wake laptop",
+            "open laptop",
+            "activate laptop",
+            "activate my laptop",
+        }:
+            return AssistantResponse("Hello sir. I am awake and ready.")
+
         try:
             # ------------------------------------------------------------------
             # Phase 7.6 – Skill Registry dispatch
@@ -451,28 +476,11 @@ class IRAAssistant:
                 print("[ROUTER] Fast-path: date query → local")
                 return AssistantResponse(f"Today is {datetime.now().strftime('%A, %B %d, %Y')}.")
 
-            if lowered in {
-                "date",
-                "what date is it",
-                "open ira",
-                "wake ira",
-                "wake up ira",
-                "activate ira",
-                "ira",
-                "open my laptop",
-                "wake my laptop",
-                "wake laptop",
-                "open laptop",
-                "activate laptop",
-                "activate my laptop",
-            }:
-                return AssistantResponse("Hello sir. I am awake and ready.")
-
             if lowered.startswith(("lock screen", "lock my screen", "lock computer", "lock pc", "lock the screen")):
-                return AssistantResponse(lock_screen())
+                return AssistantResponse(desktop_tools.lock_screen())
 
             if lowered.startswith(("shut down", "shutdown", "turn off", "power off", "shut down the computer", "shutdown the computer", "turn off the computer", "power off the computer")):
-                return AssistantResponse(shutdown_system())
+                return AssistantResponse(desktop_tools.shutdown_system())
 
             if lowered.startswith((
                 "sleep", "go to sleep", "put the computer to sleep",
@@ -482,7 +490,7 @@ class IRAAssistant:
                 "put my computer to sleep",
             )):
                 print("[ROUTER] Fast-path: sleep → local")
-                return AssistantResponse(sleep_system())
+                return AssistantResponse(desktop_tools.sleep_system())
 
             if lowered.startswith((
                 "restart", "reboot", "restart computer", "restart the computer",
@@ -500,27 +508,27 @@ class IRAAssistant:
 
 
             if lowered.startswith(("mute", "mute the volume", "silence", "turn volume off", "turn off volume", "volume mute")):
-                return AssistantResponse(mute_system())
+                return AssistantResponse(desktop_tools.mute_system())
 
             if lowered.startswith(("unmute", "unmute the volume", "turn volume on", "turn on volume")):
-                return AssistantResponse(mute_system())
+                return AssistantResponse(desktop_tools.mute_system())
 
             if lowered.startswith(("volume up", "increase volume", "louder", "make it louder")):
-                return AssistantResponse(volume_up())
+                return AssistantResponse(desktop_tools.volume_up())
 
             if lowered.startswith(("volume down", "decrease volume", "quieter", "make it quieter")):
-                return AssistantResponse(volume_down())
+                return AssistantResponse(desktop_tools.volume_down())
 
             if "brightness" in lowered:
                 import re
                 match = re.search(r"(\d+)", lowered)
                 if match:
                     level = int(match.group(1))
-                    return AssistantResponse(set_brightness(level))
+                    return AssistantResponse(desktop_tools.set_brightness(level))
                 if "up" in lowered or "increase" in lowered or "brighter" in lowered:
-                    return AssistantResponse(set_brightness(80))
+                    return AssistantResponse(desktop_tools.set_brightness(80))
                 if "down" in lowered or "decrease" in lowered or "dimmer" in lowered:
-                    return AssistantResponse(set_brightness(30))
+                    return AssistantResponse(desktop_tools.set_brightness(30))
 
             if lowered.startswith(("battery", "check battery", "battery status", "how is the battery")):
                 return AssistantResponse(get_battery_status())
@@ -548,61 +556,61 @@ class IRAAssistant:
 
             if lowered.startswith(("call ", "make a call to ")):
                 try:
-                    return AssistantResponse(open_app("skype"))
+                    return AssistantResponse(desktop_tools.open_app("skype"))
                 except ActionError as exc:
                     return AssistantResponse(str(exc), handled=False)
 
             if lowered.startswith(("launch ", "start ")):
                 app_name = command.split(" ", 1)[1].strip()
-                result = open_app(app_name)      # may raise ActionError
+                result = desktop_tools.open_app(app_name)      # may raise ActionError
                 _context.set_app(app_name)       # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith(("open application ", "open app ", "open program ")):
                 app_name = command.split(" ", 2)[2].strip()
-                result = open_app(app_name)      # may raise ActionError
+                result = desktop_tools.open_app(app_name)      # may raise ActionError
                 _context.set_app(app_name)       # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("go to "):
                 target = command[len("go to ") :].strip()
-                result = open_website(target)    # may raise ActionError
+                result = desktop_tools.open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("visit "):
                 target = command[len("visit ") :].strip()
-                result = open_website(target)    # may raise ActionError
+                result = desktop_tools.open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("open folder "):
                 target = command[len("open folder ") :].strip()
                 if self._is_known_folder(target):
-                    return AssistantResponse(open_known_folder(target))
-                return AssistantResponse(open_path(target))
+                    return AssistantResponse(desktop_tools.open_known_folder(target))
+                return AssistantResponse(desktop_tools.open_path(target))
 
             if lowered.startswith("open file "):
                 target = command[len("open file ") :].strip()
-                return AssistantResponse(open_path(target))
+                return AssistantResponse(desktop_tools.open_path(target))
 
             if lowered.startswith("open website "):
                 target = command[len("open website ") :].strip()
-                result = open_website(target)    # may raise ActionError
+                result = desktop_tools.open_website(target)    # may raise ActionError
                 _context.set_website(target)     # only reached on success
                 return AssistantResponse(result)
 
             if lowered.startswith("open downloads"):
-                return AssistantResponse(open_known_folder("downloads"))
+                return AssistantResponse(desktop_tools.open_known_folder("downloads"))
 
             if lowered.startswith("open documents"):
-                return AssistantResponse(open_known_folder("documents"))
+                return AssistantResponse(desktop_tools.open_known_folder("documents"))
 
             if lowered.startswith("open desktop"):
-                return AssistantResponse(open_known_folder("desktop"))
+                return AssistantResponse(desktop_tools.open_known_folder("desktop"))
 
             if lowered.startswith("open pictures") or lowered.startswith("open photos"):
-                return AssistantResponse(open_known_folder("pictures"))
+                return AssistantResponse(desktop_tools.open_known_folder("pictures"))
 
             # ------------------------------------------------------------------
             # Phase 2.5 – Fast website shortcuts (O(1) dict lookup)
@@ -614,41 +622,41 @@ class IRAAssistant:
                 if _target_name in _FAST_WEBSITE_SHORTCUTS:
                     _url = _FAST_WEBSITE_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → website {_url}")
-                    result = open_website(_url)
+                    result = desktop_tools.open_website(_url)
                     _context.set_website(_target_name)
                     return AssistantResponse(result)
                 if _target_name in _FAST_APP_SHORTCUTS:
                     _exe = _FAST_APP_SHORTCUTS[_target_name]
                     print(f"[ROUTER] Fast-path: open {_target_name} → app {_exe}")
-                    result = open_app(_exe)
+                    result = desktop_tools.open_app(_exe)
                     _context.set_app(_target_name)
                     return AssistantResponse(result)
 
             if lowered.startswith("search google for "):
                 query = command[len("search google for ") :].strip()
-                return AssistantResponse(search_web(query))
+                return AssistantResponse(desktop_tools.search_web(query))
 
             if lowered.startswith("search for "):
                 query = command[len("search for ") :].strip()
-                return AssistantResponse(search_web(query))
+                return AssistantResponse(desktop_tools.search_web(query))
 
             if lowered.startswith("google "):
                 query = command[len("google ") :].strip()
-                return AssistantResponse(search_web(query))
+                return AssistantResponse(desktop_tools.search_web(query))
 
             if lowered.startswith("find "):
                 query = command[len("find ") :].strip()
-                return AssistantResponse(search_web(query))
+                return AssistantResponse(desktop_tools.search_web(query))
 
             if lowered.startswith("open "):
                 target = command[len("open ") :].strip()
                 if self._looks_like_website(target):
-                    result = open_website(target)   # may raise ActionError
+                    result = desktop_tools.open_website(target)   # may raise ActionError
                     _context.set_website(target)    # only reached on success
                     return AssistantResponse(result)
                 if self._is_known_folder(target):
-                    return AssistantResponse(open_known_folder(target))
-                result = open_app(target)           # may raise ActionError
+                    return AssistantResponse(desktop_tools.open_known_folder(target))
+                result = desktop_tools.open_app(target)           # may raise ActionError
                 _context.set_app(target)            # only reached on success
                 return AssistantResponse(result)
 
@@ -656,7 +664,7 @@ class IRAAssistant:
                 query = command[len("play ") :].strip()
                 if query.lower().endswith(" on youtube"):
                     query = query[: -len(" on youtube")].strip()
-                return AssistantResponse(play_youtube_search(query))
+                return AssistantResponse(desktop_tools.play_youtube_search(query))
 
         except ActionError as exc:
             return AssistantResponse(str(exc), handled=False)
@@ -692,6 +700,9 @@ class IRAAssistant:
             target = self._preferred_target(command, config["keys"])
             if target is None:
                 return None
+            aliases = config.get("aliases", {})
+            if isinstance(aliases, dict):
+                target = str(aliases.get(target.casefold(), target))
 
             skill_name = str(config["skill"])
             skill = _registry.get(skill_name)
@@ -745,6 +756,10 @@ class IRAAssistant:
             memory_text = command[len("forget "):].strip()
             forgotten = _memory_manager.forget(memory_text)
             if forgotten:
+                for memory in forgotten:
+                    key = str(memory.metadata.get("key", "")).strip()
+                    if key:
+                        _persistent_memory_manager.forget(key)
                 _memory_consolidator.consolidate(_memory_store)
                 return AssistantResponse("I've forgotten it.")
             return AssistantResponse("I don't have anything stored about that yet.")
@@ -799,6 +814,7 @@ class IRAAssistant:
         remembered = _memory_manager.remember(text)
 
         if remembered:
+            self._mirror_to_persistent_memory(remembered)
             _memory_consolidator.consolidate(_memory_store)
 
         new_memories = [
@@ -823,6 +839,18 @@ class IRAAssistant:
             "updated_preference": updated_preference,
             "duplicate": duplicate,
         }
+
+    def _mirror_to_persistent_memory(self, memories: list) -> None:
+        for memory in memories:
+            key = str(memory.metadata.get("key", "")).strip()
+            value = str(memory.metadata.get("value", "")).strip()
+            category = str(memory.metadata.get("category", "")).strip()
+            if not key or not value or not category:
+                continue
+            try:
+                _persistent_memory_manager.remember(key, value, category)
+            except Exception as exc:
+                print(f"[MEMORY] SQLite mirror failed for {key}: {exc}")
 
     def _memory_reply(self, save_result: dict[str, object]) -> str:
         remembered = save_result["remembered"]

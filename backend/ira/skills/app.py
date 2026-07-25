@@ -1,7 +1,8 @@
 import re
 from .base import Skill
 from ..assistant import AssistantResponse
-from ..actions import open_app, open_known_folder, ActionError
+from ..actions import ActionError
+from ..tools import desktop_tools
 
 # Verbs that prefix commands but carry no semantic meaning for routing
 _VERBS = {"open", "launch", "start", "run"}
@@ -41,6 +42,14 @@ _ALIASES: dict[str, str] = {
     "whatsapp": "whatsapp",
     "telegram": "telegram",
 }
+
+
+def open_app(app_name: str) -> str:
+    return desktop_tools.open_app(app_name)
+
+
+def open_known_folder(folder_name: str) -> str:
+    return desktop_tools.open_known_folder(folder_name)
 
 
 def _strip_verb(command: str) -> str:
@@ -104,6 +113,8 @@ class AppSkill(Skill):
                 result = open_known_folder(target.lower())
             else:
                 result = open_app(target)
+                if target != raw_target and result == f"Opening {target}":
+                    result = f"Opening {raw_target}"
         except ActionError:
             raise  # propagate exactly — no swallowing
 
