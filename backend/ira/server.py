@@ -15,6 +15,7 @@ import time
 
 class IRARequestHandler(BaseHTTPRequestHandler):
     assistant = IRAAssistant()
+    platform_components: dict = {}
 
     def do_OPTIONS(self) -> None:
         self._send_empty(204)
@@ -54,6 +55,21 @@ class IRARequestHandler(BaseHTTPRequestHandler):
             self._handle_listen()
             t_req_end = time.perf_counter()
             print(f"[PERF] Total HTTP request: {(t_req_end - t_req_start) * 1000:.0f} ms")
+            return
+
+        if self.path == "/api/v1/device/register":
+            self._handle_api_device_register()
+            t_req_end = time.perf_counter()
+            return
+            
+        if self.path == "/api/v1/device/heartbeat":
+            self._handle_api_device_heartbeat()
+            t_req_end = time.perf_counter()
+            return
+            
+        if self.path == "/api/v1/session":
+            self._handle_api_session()
+            t_req_end = time.perf_counter()
             return
 
         self._send_json({"ok": False, "error": "Not found"}, status=404)
@@ -108,6 +124,51 @@ class IRARequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"ok": False, "error": str(e)}, status=500)
 
+    def _handle_api_device_register(self) -> None:
+        try:
+            payload = self._read_json()
+            from .device.models import Device, DeviceType, Capability
+            device = Device(
+                device_id=payload.get("device_id", ""),
+                user_id=payload.get("user_id", "default"),
+                device_name=payload.get("device_name", "Unknown"),
+                device_type=DeviceType(payload.get("device_type", "UNKNOWN")),
+                platform=payload.get("platform", ""),
+                os_version=payload.get("os_version", ""),
+                app_version=payload.get("app_version", ""),
+                capabilities={Capability(c) for c in payload.get("capabilities", [])}
+            )
+            device_manager = self.platform_components.get("device_manager")
+            if device_manager:
+                device_manager.register_device(device)
+            self._send_json({"success": True, "device_secret": "test_secret"})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, status=400)
+            
+    def _handle_api_device_heartbeat(self) -> None:
+        try:
+            payload = self._read_json()
+            device_id = payload.get("device_id", "")
+            device_manager = self.platform_components.get("device_manager")
+            if device_manager:
+                device_manager.update_last_seen(device_id)
+            self._send_json({"success": True})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, status=400)
+            
+    def _handle_api_session(self) -> None:
+        try:
+            payload = self._read_json()
+            device_id = payload.get("device_id", "")
+            session_manager = self.platform_components.get("session_manager")
+            session_id = None
+            if session_manager:
+                session = session_manager.create(device_id)
+                session_id = session.session_id
+            self._send_json({"success": True, "session_id": session_id, "status": "ACTIVE"})
+        except Exception as e:
+            self._send_json({"success": False, "error": str(e)}, status=400)
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
@@ -140,6 +201,20 @@ class IRARequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    from .lifecycle.startup import initialize_platform
+    from .lifecycle.shutdown import shutdown_platform
+    
+    components = initialize_platform()
+    IRARequestHandler.platform_components = components
+    
+    # Inject into brain orchestrator
+    if hasattr(IRARequestHandler.assistant, "orchestrator"):
+        o = IRARequestHandler.assistant.orchestrator
+        o._device_manager = components["device_manager"]
+        o._session_manager = components["session_manager"]
+        o._event_bus = components["event_bus"]
+        o._notification_dispatcher = components["notification_dispatcher"]
+
     server = ThreadingHTTPServer((HOST, PORT), IRARequestHandler)
     
     # Get local IP for network access
@@ -156,7 +231,7 @@ def main() -> None:
     
     print(f"IRA backend server listening on http://{HOST}:{PORT}")
     print(f"Network accessible at: http://{local_ip}:{PORT}")
-    print("Frontend can use the unified backend routes: /health, /command, /face.")
+    print("Frontend can use the unified backend routes: /health, /command, /face, /api/v1/*.")
 
     try:
         server.serve_forever()
@@ -164,6 +239,7 @@ def main() -> None:
         print("\nIRA backend server stopped.")
     finally:
         server.server_close()
+        shutdown_platform(components)
 
 
 if __name__ == "__main__":

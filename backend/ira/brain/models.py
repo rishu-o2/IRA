@@ -13,6 +13,8 @@ class AssistantResponse:
 @dataclass(frozen=True)
 class BrainRequest:
     message: str
+    device_id: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)

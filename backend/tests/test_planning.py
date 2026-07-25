@@ -25,7 +25,7 @@ def _make_context(request: str, goal: Goal | None = None) -> PlanningContext:
     return PlanningContext(
         request=request,
         knowledge=KnowledgeGraph(),
-        conversation=[],
+        conversation_history=[],
         memory={},
         preferences={},
         current_goal=goal,

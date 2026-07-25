@@ -8,18 +8,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..knowledge.models import KnowledgeGraph
+from ..device.models import Device
+from ..session_manager.models import IRASession
 from .models import Goal, GoalStatus, Plan
-
 
 @dataclass
 class PlanningContext:
     """The complete context passed from the Brain to the Planner."""
     request: str
     knowledge: KnowledgeGraph
-    conversation: list[dict[str, Any]]
-    memory: dict[str, str]
-    preferences: dict[str, str]
     current_goal: Goal
+    session: IRASession | None = None
+    device: Device | None = None
+    execution_state: dict[str, Any] = field(default_factory=dict)
+    conversation_history: list[dict[str, Any]] = field(default_factory=list)
+    memory: dict[str, str] = field(default_factory=dict)
+    preferences: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

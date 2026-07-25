@@ -43,6 +43,11 @@ class BrainOrchestrator:
         execution_engine=None,
         goal_detector=None,
         memory_writer: MemoryWriter | None = None,
+        # Sprint 6 additions (optional, backward-compatible)
+        device_manager=None,
+        session_manager=None,
+        event_bus=None,
+        notification_dispatcher=None,
     ) -> None:
         self._planner = planner
         self._intent_classifier = intent_classifier or IntentClassifier()
@@ -54,6 +59,12 @@ class BrainOrchestrator:
         self._execution_engine = execution_engine
         self._goal_detector = goal_detector
         self._memory_writer = memory_writer
+
+        # Sprint 6 components
+        self._device_manager = device_manager
+        self._session_manager = session_manager
+        self._event_bus = event_bus
+        self._notification_dispatcher = notification_dispatcher
 
     def process(
         self,
@@ -89,8 +100,28 @@ class BrainOrchestrator:
         """Sprint 5 pipeline: Goal Detection → Knowledge → Context → Plan → Execute → Memory."""
         from ..planning.context import GoalSnapshot, PlanningContext
 
+        # Extract device and session
+        device = None
+        session = None
+        if self._device_manager and request.device_id:
+            device = self._device_manager._registry.get(request.device_id)
+        if self._session_manager:
+            if request.session_id:
+                session = self._session_manager.restore(request.session_id)
+            elif request.device_id:
+                session = self._session_manager.get_by_device(request.device_id)
+
         # Step 1: Detect goal
         goal = self._goal_detector.detect(request.message)
+        
+        # Publish Goal Created Event
+        if self._event_bus:
+            from ..events.models import IRAEvent, EventType
+            self._event_bus.publish(IRAEvent(
+                event_type=EventType.GOAL_CREATED, 
+                payload={"goal_id": goal.id, "description": goal.description},
+                source_device_id=request.device_id
+            ))
 
         # Step 2: Retrieve structured knowledge
         knowledge = self._retrieve_knowledge(request.message)
@@ -99,10 +130,12 @@ class BrainOrchestrator:
         context = PlanningContext(
             request=request.message,
             knowledge=knowledge,
-            conversation=[],
+            conversation_history=session.conversation_context if session else [],
             memory={},
             preferences={},
             current_goal=goal,
+            session=session,
+            device=device,
         )
 
         # Step 4: Create plan via Planner
@@ -110,6 +143,15 @@ class BrainOrchestrator:
 
         # Step 5: Execute via ExecutionEngine
         execution_result = self._execution_engine.execute(planning_result)
+
+        # Publish Goal Completed Event
+        if self._event_bus:
+            from ..events.models import IRAEvent, EventType
+            self._event_bus.publish(IRAEvent(
+                event_type=EventType.GOAL_COMPLETED, 
+                payload={"goal_id": goal.id, "success": execution_result.success},
+                source_device_id=request.device_id
+            ))
 
         # Step 6: Persist GoalSnapshot to memory
         if self._memory_writer:

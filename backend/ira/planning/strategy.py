@@ -24,6 +24,26 @@ class SingleStepStrategy:
         return True
 
     def create_plan(self, context: PlanningContext) -> PlanningResult:
+        missing_info = []
+        lowered = context.request.lower()
+        
+        # Capability checks for Sprint 6
+        if context.device:
+            from ..device.models import Capability
+            if any(w in lowered for w in ["open browser", "search"]) and Capability.BROWSER not in context.device.capabilities:
+                missing_info.append("Device lacks BROWSER capability")
+            if any(w in lowered for w in ["shell", "terminal", "run command"]) and Capability.SHELL not in context.device.capabilities:
+                missing_info.append("Device lacks SHELL capability")
+
+        if missing_info:
+            return PlanningResult(
+                goal=context.current_goal,
+                plan=Plan(),
+                strategy="SingleStepStrategy",
+                confidence=0.0,
+                missing_information=missing_info,
+            )
+
         task = Task(
             goal_id=context.current_goal.id,
             description=context.request,
