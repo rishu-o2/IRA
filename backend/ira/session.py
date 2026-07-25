@@ -25,6 +25,13 @@ from .execution.executor import TaskExecutor
 from .goals.manager import GoalManager
 from .suggestions import ProactiveSuggestionEngine
 
+from .knowledge.service import KnowledgeService
+from .knowledge.store import KnowledgeStore
+from .planning.goal_detector import GoalDetector
+from .planning.planner import Planner as GoalPlanner
+from .planning.executor import ExecutionEngine
+from .router.tool_router import default_tool_router
+
 # ---------------------------------------------------------------------------
 # Long-term memory
 # ---------------------------------------------------------------------------
@@ -35,9 +42,21 @@ _MEMORY_PATH = str(
 memory_store: MemoryStore = MemoryStore(MemoryStorage(_MEMORY_PATH))
 memory_manager: LegacyMemoryManager = LegacyMemoryManager(memory_store)
 persistent_memory_manager: MemoryManager = MemoryManager()
+
+knowledge_store: KnowledgeStore = KnowledgeStore(persistent_memory_manager.storage)
+knowledge_service: KnowledgeService = KnowledgeService(knowledge_store)
+persistent_memory_manager.knowledge_service = knowledge_service
+
 context_retriever: ContextRetriever = ContextRetriever(memory_store)
 memory_consolidator: MemoryConsolidator = MemoryConsolidator()
 suggestion_engine: ProactiveSuggestionEngine = ProactiveSuggestionEngine()
+
+# ---------------------------------------------------------------------------
+# Sprint 5: Goal Planning Engine
+# ---------------------------------------------------------------------------
+goal_detector: GoalDetector = GoalDetector()
+goal_planner: GoalPlanner = GoalPlanner()
+execution_engine: ExecutionEngine = ExecutionEngine(tool_router=default_tool_router)
 
 # Consolidation throttle – run consolidation every N memory writes.
 MEMORY_CONSOLIDATION_INTERVAL: int = 25

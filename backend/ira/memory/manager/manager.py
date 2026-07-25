@@ -6,10 +6,18 @@ from pathlib import Path
 from ...storage import SQLiteStorage
 from ..models import MemoryRecord
 
+from ...knowledge.service import KnowledgeService
+
 
 class MemoryManager:
-    def __init__(self, database_path: str | Path | None = None, storage: SQLiteStorage | None = None) -> None:
+    def __init__(
+        self, 
+        database_path: str | Path | None = None, 
+        storage: SQLiteStorage | None = None,
+        knowledge_service: KnowledgeService | None = None,
+    ) -> None:
         self.storage = storage or SQLiteStorage(database_path)
+        self.knowledge_service = knowledge_service
 
     def remember(self, key: str, value: str, category: str) -> MemoryRecord:
         clean_key = self._clean("key", key)
@@ -35,6 +43,13 @@ class MemoryManager:
                 (clean_key, clean_value, clean_category, created_at, now),
             )
             connection.commit()
+
+        # Fire and forget knowledge processing (or synchronous block)
+        if self.knowledge_service:
+            try:
+                self.knowledge_service.process(clean_value)
+            except Exception as e:
+                print(f"[KnowledgeService] Failed to extract knowledge from '{clean_value}': {e}")
 
         recalled = self._get_record(clean_key)
         if recalled is None:
