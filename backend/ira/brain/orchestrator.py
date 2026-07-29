@@ -9,6 +9,7 @@ from .models import AssistantResponse, BrainRequest, BrainResult
 from .planner import BrainPlanner
 from ..tools import ToolRequest, ToolResult
 from ..knowledge.models import KnowledgeGraph
+from ..pipeline_log import pipeline_log
 
 SingleStepHandler = Callable[[str], AssistantResponse]
 MultiStepHandler = Callable[[str, object], AssistantResponse]
@@ -73,20 +74,27 @@ class BrainOrchestrator:
         run_multi_step: MultiStepHandler,
     ) -> BrainResult:
         # ── Step 1: resolve memory shorthands ────────────────────────────────
+        pipeline_log("Brain", "Resolving memory shorthands")
         request = self._resolve_memory_references(request)
 
         # ── Step 2: intent classification ────────────────────────────────────
+        pipeline_log("Brain", "Intent classification")
         intent = self._intent_classifier.classify(request)
 
         # ── Step 3: legacy planning (always runs for backward-compat) ─────────
+        pipeline_log("Brain", "Legacy planning")
         plan = self._planner.plan(intent)
 
         # ── Step 4: Sprint-5 planning pipeline (runs when components injected) ─
+        pipeline_log("Brain", "Execution routing")
         if self._goal_detector and self._goal_planner and self._execution_engine:
+            pipeline_log("Brain", "Using Sprint 5 planning pipeline")
             response = self._run_planning_pipeline(request, run_single_step, run_multi_step)
         elif plan.is_multi_step:
+            pipeline_log("Brain", "Using legacy multi-step")
             response = run_multi_step(request.message, plan.raw_plan)
         else:
+            pipeline_log("Brain", "Using legacy single-step")
             response = run_single_step(request.message)
 
         return BrainResult(response=response, intent=intent, plan=plan)

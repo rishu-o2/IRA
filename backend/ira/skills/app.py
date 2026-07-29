@@ -116,7 +116,9 @@ class AppSkill(Skill):
         }
         words = target.split()
         if len(words) == 1 and words[0] not in excluded_singles:
-            return True
+            from .browser import _WEBSITE_SHORTCUTS
+            if words[0] not in _WEBSITE_SHORTCUTS:
+                return True
 
         return False
 

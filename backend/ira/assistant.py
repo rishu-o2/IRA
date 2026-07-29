@@ -125,6 +125,9 @@ class IRAAssistant:
         This is the single public API that CLI, HTTP server, and Electron
         all call.
         """
+        from .pipeline_log import pipeline_log
+        pipeline_log("Assistant", f"Handling: '{message}'")
+
         self._memory_context = session.context_retriever.retrieve(message)
         self._memory_context_ref[0] = self._memory_context
 

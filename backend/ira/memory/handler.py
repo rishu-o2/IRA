@@ -255,7 +255,7 @@ class MemoryHandler:
         return any(
             term in lowered
             for term in {
-                "favorite", "prefer", "use", "editor",
+                "favorite", "favourite", "prefer", "use", "editor",
                 "goal", "goal is", "project", "live", "work", "note",
             }
         )

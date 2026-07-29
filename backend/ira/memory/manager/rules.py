@@ -45,6 +45,7 @@ class MemoryRules:
     )
     _MEMORY_SIGNALS = (
         "my favorite ",
+        "my favourite ",
         "my exam is ",
         "i prefer ",
         "i use ",

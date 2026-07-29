@@ -37,7 +37,7 @@ class MemoryExtractor:
         )
 
     def _favorite(self, normalized: str) -> MemoryEntry | None:
-        match = re.match(r"my favorite ([a-z ]+) is (.+)", normalized)
+        match = re.match(r"my (?:favorite|favourite) ([a-z ]+) is (.+)", normalized)
         if match is None:
             return None
         subject = match.group(1).strip()

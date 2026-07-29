@@ -31,7 +31,10 @@ class SkillRegistry:
         Iterate through registered skills in order.
         Return the first skill whose can_handle(command) returns True.
         """
+        from ..pipeline_log import pipeline_log
         for skill in self._skills:
-            if skill.can_handle(command):
+            can = skill.can_handle(command)
+            pipeline_log("SkillRegistry", f"Checking {skill.name}: {can}")
+            if can:
                 return skill
         return None

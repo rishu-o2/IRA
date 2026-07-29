@@ -19,6 +19,7 @@ from .actions import ActionError
 from .brain.models import AssistantResponse
 from .context_resolver import ContextResolver
 from .conversation import ConversationError, GeminiConversation
+from .pipeline_log import pipeline_log
 from .memory.handler import MemoryHandler
 from .memory.retrieval import Context
 from .normalizer import CommandNormalizer
@@ -99,26 +100,31 @@ class RequestHandler:
             )
 
         # 1. Context resolution (pronoun rewriting).
+        pipeline_log("RequestHandler", "Context resolution")
         ctx_result = self._ctx_resolver.resolve(command, lowered)
         if isinstance(ctx_result, AssistantResponse):
             return ctx_result
         command, lowered = ctx_result
 
         # 2. Memory commands (remember / forget / show).
+        pipeline_log("RequestHandler", "Memory command check")
         memory_command = self._memory.handle_command(command, lowered)
         if memory_command is not None:
             return memory_command
 
         # 3. Memory statements (implicit learning).
+        pipeline_log("RequestHandler", "Memory statement check")
         memory_statement = self._memory.handle_statement(command)
         if memory_statement is not None:
             return memory_statement
 
         # 4. Wake / greeting set.
+        pipeline_log("RequestHandler", "Wake command check")
         if lowered in _WAKE_COMMANDS:
             return AssistantResponse("Hello sir. I am awake and ready.")
 
         # 5. Sensitivity guard.
+        pipeline_log("RequestHandler", "Sensitivity guard")
         if self._normalizer.looks_sensitive_or_unsupported(lowered):
             return AssistantResponse(
                 "I cannot complete that action yet. I can talk, open apps and "
@@ -128,15 +134,18 @@ class RequestHandler:
             )
 
         # 6. Memory-based answers.
+        pipeline_log("RequestHandler", "Memory answer check")
         memory_ctx: Context = self._memory_context_ref[0]
         memory_answer = self._memory.answer_from_context(command, lowered, memory_ctx)
         if memory_answer is not None:
             return memory_answer
 
         # 7. Skill dispatch (includes preference, virtual world, modification, etc.)
+        pipeline_log("RequestHandler", "Skill dispatch")
         try:
             skill = self._registry.dispatch(command)
             if skill is not None:
+                pipeline_log("RequestHandler", f"Skill found: {skill.name}")
                 print(f"[SKILL] Routing '{command}' \u2192 {skill.name}")
                 skill_result = skill.execute(command)
                 if isinstance(skill_result, AssistantResponse):
@@ -146,6 +155,7 @@ class RequestHandler:
             return AssistantResponse(str(exc), handled=False)
 
         # 8. LLM fallback.
+        pipeline_log("RequestHandler", "LLM fallback")
         try:
             t_llm_start = time.perf_counter()
             reply_text = self._conversation.reply(command)
