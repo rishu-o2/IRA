@@ -31,6 +31,8 @@ from .planning.goal_detector import GoalDetector
 from .planning.planner import Planner as GoalPlanner
 from .planning.executor import ExecutionEngine
 from .router.tool_router import default_tool_router
+from .experience.store import ExperienceStore
+from .learning.engine import LearningEngine
 
 # ---------------------------------------------------------------------------
 # Long-term memory
@@ -47,6 +49,9 @@ knowledge_store: KnowledgeStore = KnowledgeStore(persistent_memory_manager.stora
 knowledge_service: KnowledgeService = KnowledgeService(knowledge_store)
 persistent_memory_manager.knowledge_service = knowledge_service
 
+experience_store: ExperienceStore = ExperienceStore(persistent_memory_manager.storage)
+learning_engine: LearningEngine = LearningEngine(experience_store, knowledge_service)
+
 context_retriever: ContextRetriever = ContextRetriever(memory_store)
 memory_consolidator: MemoryConsolidator = MemoryConsolidator()
 suggestion_engine: ProactiveSuggestionEngine = ProactiveSuggestionEngine()
@@ -56,7 +61,12 @@ suggestion_engine: ProactiveSuggestionEngine = ProactiveSuggestionEngine()
 # ---------------------------------------------------------------------------
 goal_detector: GoalDetector = GoalDetector()
 goal_planner: GoalPlanner = GoalPlanner()
-execution_engine: ExecutionEngine = ExecutionEngine(tool_router=default_tool_router)
+execution_engine: ExecutionEngine = ExecutionEngine(
+    tool_router=default_tool_router,
+    experience_store=experience_store,
+    learning_engine=learning_engine,
+    memory_writer=persistent_memory_manager
+)
 
 # Consolidation throttle – run consolidation every N memory writes.
 MEMORY_CONSOLIDATION_INTERVAL: int = 25

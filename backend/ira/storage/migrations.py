@@ -69,6 +69,35 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity);
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS experiences (
+            id TEXT PRIMARY KEY,
+            tool TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            parameters TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            success INTEGER NOT NULL,
+            execution_time REAL NOT NULL,
+            attempts INTEGER NOT NULL,
+            recovery_used INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS execution_preferences (
+            tool TEXT NOT NULL,
+            parameter_hash TEXT NOT NULL,
+            preferred_parameters TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            success_rate REAL NOT NULL,
+            last_used TEXT NOT NULL,
+            PRIMARY KEY(tool, parameter_hash)
+        );
+        """,
+    ),
 )
 
 

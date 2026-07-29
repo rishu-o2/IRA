@@ -44,3 +44,59 @@ class KnowledgeService:
                 rel.source_entity = stored_entities_by_name[src_name].id
                 rel.target_entity = stored_entities_by_name[tgt_name].id
                 self.store.create_relationship(rel)
+
+    def remember_experience(self, experience: Any) -> None:
+        """Saves successful or recovered execution details into the structured knowledge graph."""
+        if not experience.success:
+            return
+
+        from .models import Entity, EntityType, Relationship, RelationshipType
+        
+        tool = experience.tool
+        orig_params = experience.parameters
+        pref_params = experience.metadata.get("recovered_parameters", orig_params)
+        
+        if tool == "open_app" and "app_name" in orig_params:
+            orig_name = orig_params["app_name"]
+            pref_name = pref_params["app_name"]
+            
+            # Look up or create entities
+            e1 = self.store.find_entity_by_name(orig_name)
+            if not e1:
+                e1 = Entity(name=orig_name, entity_type=EntityType.APPLICATION, category="app")
+                self.store.create_entity(e1)
+            
+            if orig_name != pref_name:
+                e2 = self.store.find_entity_by_name(pref_name)
+                if not e2:
+                    e2 = Entity(name=pref_name, entity_type=EntityType.APPLICATION, category="app_path")
+                    self.store.create_entity(e2)
+                
+                rel = Relationship(
+                    source_entity=e1.id,
+                    target_entity=e2.id,
+                    relationship_type=RelationshipType.RELATED_TO
+                )
+                self.store.create_relationship(rel)
+
+        elif tool == "open_website" and "url" in orig_params:
+            orig_url = orig_params["url"]
+            pref_url = pref_params["url"]
+            
+            e1 = self.store.find_entity_by_name(orig_url)
+            if not e1:
+                e1 = Entity(name=orig_url, entity_type=EntityType.WEBSITE, category="shortcut")
+                self.store.create_entity(e1)
+            
+            if orig_url != pref_url:
+                e2 = self.store.find_entity_by_name(pref_url)
+                if not e2:
+                    e2 = Entity(name=pref_url, entity_type=EntityType.WEBSITE, category="url")
+                    self.store.create_entity(e2)
+                
+                rel = Relationship(
+                    source_entity=e1.id,
+                    target_entity=e2.id,
+                    relationship_type=RelationshipType.RELATED_TO
+                )
+                self.store.create_relationship(rel)

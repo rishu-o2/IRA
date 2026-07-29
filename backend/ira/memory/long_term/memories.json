@@ -1,38 +1,14 @@
 [
   {
-    "id": "e23f62f6-3cc6-4b13-8c33-28a05055d4f6",
+    "id": "85fdf5e1-a632-49fd-b657-897819811810",
     "type": "PREFERENCE",
     "content": "Favorite ide = VS Code",
-    "created_at": "2026-07-29T14:46:47.143897+00:00",
-    "updated_at": "2026-07-29T14:46:47.143897+00:00",
+    "created_at": "2026-07-29T15:22:38.157857+00:00",
+    "updated_at": "2026-07-29T15:22:38.157857+00:00",
     "metadata": {
       "category": "preference",
       "key": "favorite_ide",
       "value": "VS Code"
-    }
-  },
-  {
-    "id": "e0feaa3f-0a29-4fc9-b17d-aaaced780b6e",
-    "type": "FACT",
-    "content": "Personal fact = Going To Go To The Left",
-    "created_at": "2026-07-29T14:50:14.406099+00:00",
-    "updated_at": "2026-07-29T14:57:32.200503+00:00",
-    "metadata": {
-      "category": "fact",
-      "key": "personal_fact",
-      "value": "Going To Go To The Left"
-    }
-  },
-  {
-    "id": "269d28af-e97b-4e7f-a615-482b4589668e",
-    "type": "NOTE",
-    "content": "Don't let me see",
-    "created_at": "2026-07-29T14:55:22.400122+00:00",
-    "updated_at": "2026-07-29T14:55:22.424623+00:00",
-    "metadata": {
-      "category": "note",
-      "key": "note_don_t_let_me_see",
-      "value": "Don't let me see"
     }
   }
 ]
