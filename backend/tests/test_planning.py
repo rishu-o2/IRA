@@ -213,7 +213,7 @@ def test_planning_context_holds_all_fields():
     ctx = PlanningContext(
         request="Do test",
         knowledge=KnowledgeGraph(),
-        conversation=[{"role": "user", "content": "hi"}],
+        conversation_history=[{"role": "user", "content": "hi"}],
         memory={"key": "value"},
         preferences={"theme": "dark"},
         current_goal=goal,

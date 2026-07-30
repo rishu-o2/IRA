@@ -11,6 +11,14 @@ from ..tools import ToolRequest, ToolResult
 from ..knowledge.models import KnowledgeGraph
 from ..pipeline_log import pipeline_log
 
+# Sprint 7.3 imports (TYPE_CHECKING avoids circular import at startup)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..context.manager import ConversationContextManager
+    from ..context.resolver import ReferenceResolver
+    from ..context.extractor import ContextExtractor
+    from ..reasoning.engine import ReasoningEngine
+
 SingleStepHandler = Callable[[str], AssistantResponse]
 MultiStepHandler = Callable[[str, object], AssistantResponse]
 
@@ -49,6 +57,11 @@ class BrainOrchestrator:
         session_manager=None,
         event_bus=None,
         notification_dispatcher=None,
+        # Sprint 7.3 additions (optional, backward-compatible)
+        context_manager: "ConversationContextManager | None" = None,
+        reference_resolver: "ReferenceResolver | None" = None,
+        context_extractor: "ContextExtractor | None" = None,
+        reasoning_engine: "ReasoningEngine | None" = None,
     ) -> None:
         self._planner = planner
         self._intent_classifier = intent_classifier or IntentClassifier()
@@ -66,6 +79,12 @@ class BrainOrchestrator:
         self._session_manager = session_manager
         self._event_bus = event_bus
         self._notification_dispatcher = notification_dispatcher
+
+        # Sprint 7.3 components
+        self._context_manager = context_manager
+        self._reference_resolver = reference_resolver
+        self._context_extractor = context_extractor
+        self._reasoning_engine = reasoning_engine
 
     def process(
         self,
@@ -105,8 +124,49 @@ class BrainOrchestrator:
         run_single_step: SingleStepHandler,
         run_multi_step: MultiStepHandler,
     ) -> AssistantResponse:
-        """Sprint 5 pipeline: Goal Detection → Knowledge → Context → Plan → Execute → Memory."""
+        """Sprint 5–7.3 pipeline: Context → Resolver → Knowledge → Reasoning → Plan → Execute → ContextUpdate."""
         from ..planning.context import GoalSnapshot, PlanningContext
+
+        # ── Derive conversation_id (use session_id with "default" fallback) ───
+        conversation_id = request.session_id or "default"
+
+        # ── Step 0: Retrieve conversation context (Sprint 7.3) ────────────────
+        pipeline_log("Context", f"Retrieving context for conversation '{conversation_id}'")
+        conv_context = None
+        if self._context_manager:
+            conv_context = self._context_manager.current(conversation_id)
+            pipeline_log(
+                "Context",
+                f"last_application={conv_context.last_application!r}  "
+                f"last_website={conv_context.last_website!r}  "
+                f"last_folder={conv_context.last_folder!r}  "
+                f"confidence={conv_context.context_confidence:.2f}",
+            )
+
+        # ── Step 0b: Reference resolution (Sprint 7.3) ────────────────────────
+        active_request = request.message
+        reasoning_result = None
+        if self._reasoning_engine and conv_context is not None:
+            pipeline_log("Resolver", f"Resolving references in: {active_request!r}")
+            # Retrieve knowledge subgraph for Priority 2
+            knowledge_for_reasoning = self._retrieve_knowledge(active_request)
+            reasoning_result = self._reasoning_engine.reason(
+                request=active_request,
+                context=conv_context,
+                knowledge=knowledge_for_reasoning,
+                learning_engine=None,  # injected separately if available
+            )
+            pipeline_log(
+                "Reasoning",
+                f"explanation={reasoning_result.explanation!r}  "
+                f"used_context={reasoning_result.used_context}  "
+                f"used_memory={reasoning_result.used_memory}  "
+                f"used_experience={reasoning_result.used_experience}  "
+                f"confidence={reasoning_result.confidence:.2f}",
+            )
+            # Brain unwraps resolved_request — Planner receives a plain string
+            active_request = reasoning_result.resolved_request
+            pipeline_log("Reasoning", f"Final resolved request: {active_request!r}")
 
         # Extract device and session
         device = None
@@ -120,23 +180,23 @@ class BrainOrchestrator:
                 session = self._session_manager.get_by_device(request.device_id)
 
         # Step 1: Detect goal
-        goal = self._goal_detector.detect(request.message)
-        
+        goal = self._goal_detector.detect(active_request)
+
         # Publish Goal Created Event
         if self._event_bus:
             from ..events.models import IRAEvent, EventType
             self._event_bus.publish(IRAEvent(
-                event_type=EventType.GOAL_CREATED, 
+                event_type=EventType.GOAL_CREATED,
                 payload={"goal_id": goal.id, "description": goal.description},
                 source_device_id=request.device_id
             ))
 
-        # Step 2: Retrieve structured knowledge
-        knowledge = self._retrieve_knowledge(request.message)
+        # Step 2: Retrieve structured knowledge (full graph for planner)
+        knowledge = self._retrieve_knowledge(active_request)
 
-        # Step 3: Build planning context
+        # Step 3: Build planning context (Planner receives the resolved request)
         context = PlanningContext(
-            request=request.message,
+            request=active_request,
             knowledge=knowledge,
             conversation_history=session.conversation_context if session else [],
             memory={},
@@ -146,7 +206,7 @@ class BrainOrchestrator:
             device=device,
         )
 
-        # Step 4: Create plan via Planner
+        # Step 4: Create plan via Planner (unchanged API — receives plain string)
         planning_result = self._goal_planner.plan(context)
 
         # Step 5: Execute via ExecutionEngine
@@ -156,7 +216,7 @@ class BrainOrchestrator:
         if self._event_bus:
             from ..events.models import IRAEvent, EventType
             self._event_bus.publish(IRAEvent(
-                event_type=EventType.GOAL_COMPLETED, 
+                event_type=EventType.GOAL_COMPLETED,
                 payload={"goal_id": goal.id, "success": execution_result.success},
                 source_device_id=request.device_id
             ))
@@ -182,11 +242,28 @@ class BrainOrchestrator:
             except Exception:
                 pass  # Never let memory writes break the response
 
-        # Step 7: Fall back to legacy handlers for actual LLM response
+        # Step 7 (Sprint 7.3): Update conversation context — only on success ──
+        if execution_result.success and self._context_manager and self._context_extractor:
+            try:
+                delta = self._context_extractor.extract(
+                    active_request, conversation_id=conversation_id
+                )
+                self._context_manager.apply_delta(delta)
+                pipeline_log(
+                    "ContextUpdate",
+                    f"last_application={delta.last_application!r}  "
+                    f"last_website={delta.last_website!r}  "
+                    f"last_folder={delta.last_folder!r}  "
+                    f"confidence={delta.confidence:.2f}",
+                )
+            except Exception:
+                pass  # Context updates never break the response
+
+        # Step 8: Fall back to legacy handlers for actual response
         if execution_result.success:
-            return run_single_step(request.message)
+            return run_single_step(active_request)
         else:
-            return run_single_step(request.message)
+            return run_single_step(active_request)
 
     def _retrieve_knowledge(self, text: str) -> KnowledgeGraph:
         """Retrieve a knowledge subgraph relevant to the request."""
